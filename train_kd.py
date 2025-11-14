@@ -8,8 +8,6 @@ import torch.utils.data
 import datetime
 import argparse
 
-# راه حل 2: اصلاح معماری برای تطابق با checkpoint
-
 def _weights_init(m):
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         nn.init.kaiming_normal_(m.weight)
@@ -34,8 +32,8 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
 
         if self.finding_masks:
-            self.mask1 = nn.Parameter(torch.ones(planes, 1, 1, 1))
-            self.mask2 = nn.Parameter(torch.ones(planes, 1, 1, 1))
+            self.mask1 = nn.Parameter(torch.ones(planes))
+            self.mask2 = nn.Parameter(torch.ones(planes))
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != planes:
@@ -63,7 +61,6 @@ class BasicBlock(nn.Module):
         out = F.relu(out)
         return out
 
-# معماری Teacher با نام‌گذاری مطابق checkpoint
 class BasicBlockTeacher(nn.Module):
     expansion = 1
 
@@ -74,7 +71,7 @@ class BasicBlockTeacher(nn.Module):
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
 
-        self.downsample = nn.Sequential()  # اینجا downsample استفاده می‌کنیم نه shortcut
+        self.downsample = nn.Sequential()
         if stride != 1 or in_planes != planes:
             self.downsample = nn.Sequential(
                 nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
@@ -100,7 +97,6 @@ class ResNetTeacher(nn.Module):
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
         
-        # توجه: checkpoint از fc استفاده می‌کنه نه linear
         self.fc = nn.Linear(64, num_classes)
 
     def _make_layer(self, block, planes, num_blocks, stride):
@@ -121,20 +117,18 @@ class ResNetTeacher(nn.Module):
         out = self.fc(out)
         return out
 
-# معماری Student
 class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10, finding_masks=False, option='A'):
         super(ResNet, self).__init__()
         self.in_planes = 16
         self.finding_masks = finding_masks
-        self.mask_hooks = []
         self.option = option
 
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         
         if self.finding_masks:
-            self.mask0 = nn.Parameter(torch.ones(16, 1, 1, 1))
+            self.mask0 = nn.Parameter(torch.ones(16))
         
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
@@ -165,34 +159,23 @@ class ResNet(nn.Module):
         out = self.linear(out)
         return out
 
-    def hook_masks(self):
-        self.masks_dict = {}
-        self.mask_counter = 0
+    def collect_masks(self):
+        """جمع‌آوری صحیح همه mask ها"""
+        masks = []
         
-        def hook_fn(module, input, output):
-            if hasattr(module, 'mask') or (hasattr(module, 'mask0')):
-                if hasattr(module, 'mask0'):
-                    self.masks_dict[f'mask.{self.mask_counter}'] = type('obj', (object,), {'mask': module.mask0})()
-                    self.mask_counter += 1
-                if hasattr(module, 'mask1'):
-                    self.masks_dict[f'mask.{self.mask_counter}'] = type('obj', (object,), {'mask': module.mask1})()
-                    self.mask_counter += 1
-                if hasattr(module, 'mask2'):
-                    self.masks_dict[f'mask.{self.mask_counter}'] = type('obj', (object,), {'mask': module.mask2})()
-                    self.mask_counter += 1
+        # mask اولیه
+        if hasattr(self, 'mask0'):
+            masks.append(self.mask0)
         
-        for name, module in self.named_modules():
-            if hasattr(module, 'mask0') or hasattr(module, 'mask1') or hasattr(module, 'mask2'):
-                handle = module.register_forward_hook(hook_fn)
-                self.mask_hooks.append(handle)
-
-    def remove_hooks(self):
-        for handle in self.mask_hooks:
-            handle.remove()
-        self.mask_hooks = []
-
-    def get_masks(self):
-        return self.masks_dict
+        # masks از لایه‌ها
+        for layer in [self.layer1, self.layer2, self.layer3]:
+            for block in layer:
+                if hasattr(block, 'mask1'):
+                    masks.append(block.mask1)
+                if hasattr(block, 'mask2'):
+                    masks.append(block.mask2)
+        
+        return masks
 
 def resnet20(num_classes=10, finding_masks=False, option='A'):
     return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes, finding_masks=finding_masks, option=option)
@@ -200,7 +183,6 @@ def resnet20(num_classes=10, finding_masks=False, option='A'):
 def resnet56_teacher(num_classes=10):
     return ResNetTeacher(BasicBlockTeacher, [9, 9, 9], num_classes=num_classes)
 
-# Dataset
 class CIFAR10Data:
     def __init__(self, batch_size=128):
         import torchvision
@@ -231,6 +213,7 @@ def train_KD(train_loader, teacher_model, student_model, divergence_loss, criter
     student_model.train()
     correct = 0
     total = 0
+    total_loss = 0.0
     
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.cuda(), target.cuda()
@@ -242,6 +225,7 @@ def train_KD(train_loader, teacher_model, student_model, divergence_loss, criter
         student_output = student_model(data)
         student_soft = F.log_softmax(student_output / args.temperature, dim=1)
         
+        # KD Loss
         kd_loss = divergence_loss(student_soft, teacher_soft, reduction='batchmean') * (args.temperature ** 2)
         cls_loss = criterion(student_output, target)
         loss = args.alpha * kd_loss + (1 - args.alpha) * cls_loss
@@ -250,11 +234,15 @@ def train_KD(train_loader, teacher_model, student_model, divergence_loss, criter
         loss.backward()
         optimizer.step()
         
+        total_loss += loss.item()
         _, predicted = student_output.max(1)
         total += target.size(0)
         correct += predicted.eq(target).sum().item()
+        
+        if batch_idx % 100 == 0:
+            print(f'  Batch [{batch_idx}/{len(train_loader)}] Loss: {loss.item():.4f} Acc: {100.*correct/total:.2f}%')
     
-    return 100. * correct / total, 0.0
+    return 100. * correct / total, total_loss / len(train_loader)
 
 def validate(val_loader, model, criterion, args):
     model.eval()
@@ -272,6 +260,7 @@ def validate(val_loader, model, criterion, args):
     return 100. * correct / total, 0.0
 
 def ApproxSign(mask):
+    """بهینه‌شده برای گرفتن binary mask"""
     out_forward = torch.sign(mask)
     mask1 = mask < -1
     mask2 = mask < 0
@@ -296,7 +285,7 @@ def set_random_seed(seed):
 def get_logger(filename):
     import logging
     logger = logging.getLogger('kd_logger')
-    logger.handlers.clear()  # پاک کردن handlers قبلی
+    logger.handlers.clear()
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     
@@ -310,7 +299,6 @@ def get_logger(filename):
     return logger
 
 def load_pretrained_teacher(model, checkpoint_path, logger):
-    """بارگذاری صحیح با نام‌گذاری downsample"""
     if not os.path.exists(checkpoint_path):
         logger.info("Downloading pretrained model...")
         import urllib.request
@@ -321,13 +309,11 @@ def load_pretrained_teacher(model, checkpoint_path, logger):
     logger.info(f"Loading from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location='cpu')
     
-    # حذف 'module.' اگر وجود داره
     if isinstance(ckpt, dict) and 'state_dict' in ckpt:
         ckpt = ckpt['state_dict']
     
     state_dict = {k.replace('module.', ''): v for k, v in ckpt.items()}
     
-    # بارگذاری با strict=True چون حالا نام‌ها تطابق دارن
     missing, unexpected = model.load_state_dict(state_dict, strict=True)
     
     if missing:
@@ -351,7 +337,7 @@ def main():
     parser.add_argument('--lr_decay_step', default='100,150', type=str)
     parser.add_argument('--num_classes', default=10, type=int)
     parser.add_argument('--temperature', default=3.0, type=float)
-    parser.add_argument('--alpha', default=0.5, type=float)
+    parser.add_argument('--alpha', default=0.9, type=float)  # تغییر به 0.9
     parser.add_argument('--random_seed', default=42, type=int)
     parser.add_argument('--save_every', default=10, type=int)
     parser.add_argument('--start_epoch', default=0, type=int)
@@ -407,38 +393,65 @@ def main():
     best_acc1 = 0.0
     
     for epoch in range(args.start_epoch, args.epochs):
-        train_acc, _ = train_KD(data.train_loader, model, model_s, 
-                                divergence_loss, criterion, optimizer, epoch, args)
+        logger.info(f"\n{'='*50}")
+        logger.info(f"Epoch {epoch+1}/{args.epochs}")
+        
+        train_acc, train_loss = train_KD(data.train_loader, model, model_s, 
+                                         divergence_loss, criterion, optimizer, epoch, args)
         val_acc, _ = validate(data.val_loader, model_s, criterion, args)
         scheduler.step()
         
-        logger.info(f"Epoch {epoch+1}/{args.epochs} | Train: {train_acc:.2f}% | Val: {val_acc:.2f}%")
+        logger.info(f"Train Acc: {train_acc:.2f}% | Loss: {train_loss:.4f}")
+        logger.info(f"Val Acc: {val_acc:.2f}%")
         
         is_best = val_acc > best_acc1
         best_acc1 = max(val_acc, best_acc1)
         
-        if is_best or (epoch % args.save_every == 0) or epoch == args.epochs - 1:
-            if is_best:
-                mask_list = []
-                layer_num = []
+        if is_best:
+            logger.info(f"✨ New best accuracy: {val_acc:.2f}%")
+            
+            # ذخیره masks صحیح
+            mask_list = []
+            layer_num = []
+            
+            with torch.no_grad():
+                masks = model_s.collect_masks()
                 
-                model_s.hook_masks()
-                with torch.no_grad():
-                    _ = model_s(torch.randn(1, 3, 32, 32).to(device))
-                masks = model_s.get_masks()
-                
-                for key in sorted(masks.keys()):
-                    msk = ApproxSign(masks[key].mask).squeeze()
-                    layer_num.append(int(torch.sum(msk).cpu().item()))
-                    mask_list.append(msk)
-                
-                model_s.remove_hooks()
-                
-                logger.info(f"✓ Best: {val_acc:.2f}% | Layers: {layer_num}")
-                torch.save({'layer_num': layer_num, 'mask': mask_list}, f'{log_dir}/mask_best.pt')
-                torch.save(model_s.state_dict(), f'{log_dir}/{args.arch_s}_best.pt')
+                for mask in masks:
+                    binary_mask = ApproxSign(mask).squeeze()
+                    num_active = int(torch.sum(binary_mask).cpu().item())
+                    layer_num.append(num_active)
+                    mask_list.append(binary_mask)
+            
+            logger.info(f"Layer activation counts: {layer_num}")
+            logger.info(f"Total masks: {len(mask_list)}")
+            
+            torch.save({
+                'layer_num': layer_num,
+                'mask': mask_list,
+                'epoch': epoch + 1,
+                'best_acc': val_acc
+            }, f'{log_dir}/mask_best.pt')
+            
+            torch.save({
+                'state_dict': model_s.state_dict(),
+                'epoch': epoch + 1,
+                'best_acc': val_acc,
+                'optimizer': optimizer.state_dict()
+            }, f'{log_dir}/{args.arch_s}_best.pt')
+        
+        # Periodic save
+        if (epoch % args.save_every == 0) or epoch == args.epochs - 1:
+            torch.save({
+                'state_dict': model_s.state_dict(),
+                'epoch': epoch + 1,
+                'acc': val_acc,
+                'optimizer': optimizer.state_dict()
+            }, f'{log_dir}/{args.arch_s}_epoch{epoch+1}.pt')
     
-    logger.info(f"✓ Done! Best: {best_acc1:.2f}%")
+    logger.info(f"\n{'='*50}")
+    logger.info(f"✓ Training completed!")
+    logger.info(f"✓ Best validation accuracy: {best_acc1:.2f}%")
 
 if __name__ == "__main__":
     main()

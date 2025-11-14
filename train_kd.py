@@ -27,7 +27,7 @@ class LambdaLayer(nn.Module):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, option='A', finding_masks=False):
+    def __init__(self, in_planes, planes, stride=1, option='B', finding_masks=False):  # تغییر به option='B'
         super(BasicBlock, self).__init__()
         self.finding_masks = finding_masks
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
@@ -54,13 +54,11 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         if self.finding_masks:
-            # Fixed: Use view to reshape mask for proper broadcasting
             out = out * self.mask1.view(1, -1, 1, 1)
         out = F.relu(self.bn1(out))
         
         out = self.conv2(out)
         if self.finding_masks:
-            # Fixed: Use view to reshape mask for proper broadcasting
             out = out * self.mask2.view(1, -1, 1, 1)
         out = self.bn2(out)
         
@@ -69,11 +67,12 @@ class BasicBlock(nn.Module):
         return out
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, finding_masks=False):
+    def __init__(self, block, num_blocks, num_classes=10, finding_masks=False, option='B'):
         super(ResNet, self).__init__()
         self.in_planes = 16
         self.finding_masks = finding_masks
         self.mask_hooks = []
+        self.option = option
 
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
@@ -92,14 +91,13 @@ class ResNet(nn.Module):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []
         for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, finding_masks=self.finding_masks))
+            layers.append(block(self.in_planes, planes, stride, option=self.option, finding_masks=self.finding_masks))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
     def forward(self, x):
         out = self.conv1(x)
         if self.finding_masks:
-            # Fixed: Use view to reshape mask for proper broadcasting
             out = out * self.mask0.view(1, -1, 1, 1)
         out = F.relu(self.bn1(out))
         
@@ -160,15 +158,17 @@ class ResNet(nn.Module):
                 counter += 1
         return masks
 
-def resnet20(num_classes=10, finding_masks=False):
-    return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes, finding_masks=finding_masks)
+def resnet20(num_classes=10, finding_masks=False, option='A'):
+    # Student از option='A' استفاده می‌کنه چون کوچک‌تره
+    return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes, finding_masks=finding_masks, option=option)
 
-def resnet56(num_classes=10, finding_masks=False):
-    return ResNet(BasicBlock, [9, 9, 9], num_classes=num_classes, finding_masks=finding_masks)
+def resnet56(num_classes=10, finding_masks=False, option='B'):
+    # Teacher باید از option='B' استفاده کنه
+    return ResNet(BasicBlock, [9, 9, 9], num_classes=num_classes, finding_masks=finding_masks, option=option)
 
 # Define dataset loaders
 class CIFAR10Data:
-    def __init__(self):
+    def __init__(self, batch_size=128):
         import torchvision
         import torchvision.transforms as transforms
         
@@ -186,7 +186,7 @@ class CIFAR10Data:
 
         trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
         self.train_loader = torch.utils.data.DataLoader(
-            trainset, batch_size=128, shuffle=True, num_workers=2)
+            trainset, batch_size=batch_size, shuffle=True, num_workers=2)
 
         testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_val)
         self.val_loader = torch.utils.data.DataLoader(
@@ -231,7 +231,7 @@ def train_KD(train_loader, teacher_model, student_model, divergence_loss, criter
         correct += predicted.eq(target).sum().item()
     
     acc1 = 100. * correct / total
-    return acc1, 0.0  # returning dummy acc5 for compatibility
+    return acc1, 0.0
 
 def validate(val_loader, model, criterion, args):
     model.eval()
@@ -247,7 +247,7 @@ def validate(val_loader, model, criterion, args):
             correct += predicted.eq(target).sum().item()
     
     acc1 = 100. * correct / total
-    return acc1, 0.0  # returning dummy acc5 for compatibility
+    return acc1, 0.0
 
 # Helper functions
 def ApproxSign(mask):
@@ -274,24 +274,6 @@ def set_random_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def set_gpu(args, model):
-    if torch.cuda.is_available():
-        model = model.cuda()
-    return model
-
-class Logger(object):
-    def __init__(self, filename, stdout):
-        self.stdout = stdout
-        self.log = open(filename, "a")
-    
-    def write(self, message):
-        self.stdout.write(message)
-        self.log.write(message)
-    
-    def flush(self):
-        self.stdout.flush()
-        self.log.flush()
-
 def get_logger(filename):
     import logging
     logger = logging.getLogger('main_logger')
@@ -309,6 +291,35 @@ def get_logger(filename):
     logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
+
+def load_pretrained_teacher(model, checkpoint_path, logger):
+    """بارگذاری صحیح وزن‌های teacher"""
+    if not os.path.exists(checkpoint_path):
+        logger.info("Downloading pretrained model...")
+        import urllib.request
+        url = "https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt"
+        urllib.request.urlretrieve(url, checkpoint_path)
+        logger.info(f"Downloaded pretrained model to {checkpoint_path}")
+    
+    logger.info(f"Loading pretrained model from {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Check if the checkpoint has 'state_dict' key
+    if 'state_dict' in ckpt:
+        ckpt = {k.replace('module.', ''): v for k, v in ckpt['state_dict'].items()}
+    else:
+        ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
+    
+    # بارگذاری کامل بدون فیلتر کردن
+    missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+    
+    if missing_keys:
+        logger.warning(f"Missing keys: {missing_keys}")
+    if unexpected_keys:
+        logger.warning(f"Unexpected keys: {unexpected_keys}")
+    
+    logger.info("Successfully loaded pretrained weights")
+    return model
 
 # Main function
 def main():
@@ -333,11 +344,6 @@ def main():
     
     args = parser.parse_args()
     print(args)
-    
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
-    now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    sys.stdout = Logger(f'logs/print_process_{now}.log', sys.stdout)
 
     if args.random_seed is not None:
         set_random_seed(args.random_seed)
@@ -360,48 +366,16 @@ def main_worker(args):
     logger.info(f"LR decay steps: {args.lr_decay_step}")
     logger.info(f"Number of classes: {args.num_classes}")
     
-    # Initialize student model with masking support
+    # Initialize student model with masking support (option='A' برای student)
     if args.arch_s == 'resnet20':
-        model_s = resnet20(num_classes=args.num_classes, finding_masks=True)
+        model_s = resnet20(num_classes=args.num_classes, finding_masks=True, option='A')
     
-    # Initialize teacher model (without masking)
+    # Initialize teacher model (option='B' برای teacher)
     if args.arch == 'resnet56':
-        model = resnet56(num_classes=args.num_classes, finding_masks=False)
+        model = resnet56(num_classes=args.num_classes, finding_masks=False, option='B')
         if args.pretrained:
-            if args.set == 'cifar10':
-                checkpoint_path = "cifar10_resnet56-187c023a.pt"
-                
-                # Check if file exists, if not, download it
-                if not os.path.exists(checkpoint_path):
-                    logger.info("Downloading pretrained model...")
-                    import urllib.request
-                    url = "https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt"
-                    urllib.request.urlretrieve(url, checkpoint_path)
-                    logger.info(f"Downloaded pretrained model to {checkpoint_path}")
-                
-                # Load checkpoint
-                logger.info(f"Loading pretrained model from {checkpoint_path}")
-                ckpt = torch.load(checkpoint_path, map_location='cpu')
-                
-                # Check if the checkpoint has 'state_dict' key
-                if 'state_dict' in ckpt:
-                    ckpt = {k.replace('module.', ''): v for k, v in ckpt['state_dict'].items()}
-                else:
-                    ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
-    
-                # Filter out mismatched keys
-                model_state_dict = model.state_dict()
-                filtered_ckpt = {}
-                for k, v in ckpt.items():
-                    if k in model_state_dict and model_state_dict[k].shape == v.shape:
-                        filtered_ckpt[k] = v
-                    else:
-                        logger.warning(f"Skipping parameter: {k} due to shape mismatch or not found in model")
-                
-                # Update the model's state dict
-                model_state_dict.update(filtered_ckpt)
-                model.load_state_dict(model_state_dict)
-                logger.info("Successfully loaded pretrained weights")
+            checkpoint_path = "cifar10_resnet56-187c023a.pt"
+            model = load_pretrained_teacher(model, checkpoint_path, logger)
     
     # Set GPU
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
@@ -412,24 +386,29 @@ def main_worker(args):
     for param in model.parameters():
         param.requires_grad = False
     
-    # Print model parameters and gradient status
+    # Print model parameters
     logger.info("Teacher model parameters (frozen):")
     for name, param in model.named_parameters():
-        logger.info(f"Parameter of the Teacher Model: {name}, Requires Gradient: {param.requires_grad}")
+        logger.info(f"Parameter: {name}, Requires Gradient: {param.requires_grad}")
     
     logger.info("-" * 100)
     logger.info("Student model parameters (trainable):")
     for name, param in model_s.named_parameters():
-        logger.info(f"Parameter of the Student Model: {name}, Requires Gradient: {param.requires_grad}")
+        logger.info(f"Parameter: {name}, Requires Gradient: {param.requires_grad}")
     
     # Evaluate teacher model
     model.eval()
     criterion = nn.CrossEntropyLoss().to(device)
     divergence_loss = F.kl_div
-    data = CIFAR10Data()
+    data = CIFAR10Data(batch_size=args.batch_size)
     
     acc1, _ = validate(data.val_loader, model, criterion, args)
-    logger.info(f"Teacher model: {acc1:.2f}%")
+    logger.info(f"Teacher model accuracy: {acc1:.2f}%")
+    
+    # اگر دقت teacher پایین بود، هشدار بده
+    if acc1 < 90.0:
+        logger.error(f"⚠️ WARNING: Teacher accuracy is too low ({acc1:.2f}%). Expected >93%. Check model loading!")
+        logger.error("Training will continue but results may be poor.")
 
     # Set up optimizer and scheduler for student model
     optimizer = torch.optim.SGD(model_s.parameters(), lr=args.lr, 
@@ -439,33 +418,23 @@ def main_worker(args):
 
     # Training loop
     best_acc1 = 0.0
-    best_acc5 = 0.0
-    best_train_acc1 = 0.0
-    best_train_acc5 = 0.0
     mask_list = []
     layer_num = []
     
-    # Start training
     for epoch in range(args.start_epoch, args.epochs):
         logger.info(f"Epoch [{epoch+1}/{args.epochs}]")
         
-        # Train student model with knowledge distillation
-        train_acc1, train_acc5 = train_KD(data.train_loader, model, model_s, 
-                                          divergence_loss, criterion, optimizer, epoch, args)
+        train_acc1, _ = train_KD(data.train_loader, model, model_s, 
+                                divergence_loss, criterion, optimizer, epoch, args)
         
-        # Evaluate student model
-        acc1, acc5 = validate(data.val_loader, model_s, criterion, args)
+        acc1, _ = validate(data.val_loader, model_s, criterion, args)
         scheduler.step()
         
         logger.info(f"Train Accuracy: {train_acc1:.2f}%")
         logger.info(f"Validation Accuracy: {acc1:.2f}%")
         
-        # Remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
-        best_acc5 = max(acc5, best_acc5)
-        best_train_acc1 = max(train_acc1, best_train_acc1)
-        best_train_acc5 = max(train_acc5, best_train_acc5)
         
         save = ((epoch % args.save_every) == 0) and args.save_every > 0
         
@@ -474,9 +443,7 @@ def main_worker(args):
                 mask_list = []
                 layer_num = []
                 
-                # Hook masks and extract them
                 model_s.hook_masks()
-                # Run a dummy forward pass to populate masks
                 with torch.no_grad():
                     dummy_input = torch.randn(1, 3, 32, 32).to(device)
                     _ = model_s(dummy_input)
@@ -493,16 +460,11 @@ def main_worker(args):
                 logger.info(f"New best accuracy: {acc1:.2f}%")
                 logger.info(f"Layer numbers: {layer_num}")
                 
-                # Save masks
                 to = {'layer_num': layer_num, 'mask': mask_list}
                 torch.save(to, f'{log_dir}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt')
-                logger.info(f"Saved masks to {log_dir}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt")
-                
-                # Save student model
                 torch.save(model_s.state_dict(), f'{log_dir}/{args.set}_{args.arch_s}.pt')
-                logger.info(f"Saved best student model to {log_dir}/{args.set}_{args.arch_s}.pt")
+                logger.info(f"Saved best model and masks")
             
-            # Regular saving
             if save or epoch == args.epochs - 1:
                 torch.save(model_s.state_dict(), f'{log_dir}/{args.set}_{args.arch_s}_epoch_{epoch+1}.pt')
                 logger.info(f"Saved checkpoint at epoch {epoch+1}")

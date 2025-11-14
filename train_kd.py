@@ -54,12 +54,14 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         if self.finding_masks:
-            out = out * self.mask1
+            # Fixed: Use view to reshape mask for proper broadcasting
+            out = out * self.mask1.view(1, -1, 1, 1)
         out = F.relu(self.bn1(out))
         
         out = self.conv2(out)
         if self.finding_masks:
-            out = out * self.mask2
+            # Fixed: Use view to reshape mask for proper broadcasting
+            out = out * self.mask2.view(1, -1, 1, 1)
         out = self.bn2(out)
         
         out += self.shortcut(x)
@@ -97,7 +99,8 @@ class ResNet(nn.Module):
     def forward(self, x):
         out = self.conv1(x)
         if self.finding_masks:
-            out = out * self.mask0
+            # Fixed: Use view to reshape mask for proper broadcasting
+            out = out * self.mask0.view(1, -1, 1, 1)
         out = F.relu(self.bn1(out))
         
         out = self.layer1(out)
@@ -473,6 +476,10 @@ def main_worker(args):
                 
                 # Hook masks and extract them
                 model_s.hook_masks()
+                # Run a dummy forward pass to populate masks
+                with torch.no_grad():
+                    dummy_input = torch.randn(1, 3, 32, 32).to(device)
+                    _ = model_s(dummy_input)
                 masks = model_s.get_masks()
                 
                 for key in masks.keys():

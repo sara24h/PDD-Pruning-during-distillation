@@ -5,7 +5,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from models.resnet_kd import resnet20, resnet56
+from resnet_kd import resnet20, resnet56
 from data.Data import CIFAR10, CIFAR100
 from trainer.trainer import validate, train
 from utils.utils import set_gpu, set_random_seed
@@ -195,3 +195,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -30,6 +30,7 @@ class Mask(nn.Module):
             return self.binary_mask * x
 
     def apply_threshold(self, threshold=0.5):
+        """Convert learned mask to binary mask based on threshold"""
         self.binary_mask = (self.mask > threshold).float().detach()
         self.finding_masks = False
         return self.binary_mask.sum().item()
@@ -61,14 +62,14 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()
-        # اصلاح مسیر کوتاه برای CIFAR10 - استفاده از پیاده‌سازی استاندارد
         if stride != 1 or in_planes != planes:
             if option == 'A':
-                # پیاده‌سازی صحیح برای CIFAR10 با استفاده از padding
+                """
+                For CIFAR10 ResNet paper uses option A.
+                """
                 self.shortcut = LambdaLayer(lambda x:
-                    F.pad(x[:, :, ::stride, ::stride], (0, 0, 0, 0, (planes - x.size(1))//2, planes - x.size(1) - (planes - x.size(1))//2), "constant", 0))
+                    F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, (planes - in_planes) // 2, planes - in_planes - (planes - in_planes) // 2), "constant", 0))
             elif option == 'B':
-                # پیاده‌سازی جایگزین با کانولوشن 1x1
                 self.shortcut = nn.Sequential(
                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
                     nn.BatchNorm2d(self.expansion * planes)
@@ -91,28 +92,23 @@ class ResNet(nn.Module):
         self.in_planes = 16
         self.finding_masks = finding_masks
         
-        # لایه اولیه کانولوشن
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
-        
-        # لایه‌های ResNet
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1, finding_masks=finding_masks)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2, finding_masks=finding_masks)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2, finding_masks=finding_masks)
-        
-        # طبقه‌بند نهایی
         self.linear = nn.Linear(64, num_classes)
-        self.fc = self.linear  # برای سازگاری با مدل‌های پیش‌آموزش دیده
         
-        # ویژگی‌های مربوط به mask
+        # برای سازگاری با مدل‌های پیش‌آموزش دیده
+        self.fc = self.linear
+        
+        self.apply(_weights_init)
         self.handlers = []
         self.masks_outputs = {}
         self.masks = {}
-        
-        self.apply(_weights_init)
 
     def _make_layer(self, block, planes, num_blocks, stride, finding_masks=True):
-        strides = [stride] + [1] * (num_blocks - 1)
+        strides = [stride] + [1]*(num_blocks-1)
         layers = []
         for stride in strides:
             layers.append(block(self.in_planes, planes, stride, finding_masks=finding_masks))
@@ -126,28 +122,48 @@ class ResNet(nn.Module):
 
     def hook_masks(self):
         self.remove_hooks()
-        ind = 0
         
-        # ثبت هوک‌ها برای تمام لایه‌های mask
-        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
-            for j, block in enumerate(layer):
-                layer_name = 'mask.{}'.format(ind)
-                self.handlers.append(self.hook_mask(block.mask, layer_name))
-                ind += 1
+        ind = 0
+        for name, layer in self.layer1.named_children():
+            layer_name = f'mask.{ind}'
+            self.handlers.append(self.hook_mask(layer.mask, layer_name))
+            ind += 1
+            
+        for name, layer in self.layer2.named_children():
+            layer_name = f'mask.{ind}'
+            self.handlers.append(self.hook_mask(layer.mask, layer_name))
+            ind += 1
+            
+        for name, layer in self.layer3.named_children():
+            layer_name = f'mask.{ind}'
+            self.handlers.append(self.hook_mask(layer.mask, layer_name))
+            ind += 1
 
     def remove_hooks(self):
         for handler in self.handlers:
             handler.remove()
-        self.handlers = []
+        self.handlers.clear()
+        self.masks_outputs.clear()
 
     def get_masks(self):
         self.masks = {}
         ind = 0
-        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
-            for j, block in enumerate(layer):
-                layer_name = 'mask.{}'.format(ind)
-                self.masks[layer_name] = block.mask
-                ind += 1
+        
+        for name, layer in self.layer1.named_children():
+            layer_name = f'mask.{ind}'
+            self.masks[layer_name] = layer.mask
+            ind += 1
+            
+        for name, layer in self.layer2.named_children():
+            layer_name = f'mask.{ind}'
+            self.masks[layer_name] = layer.mask
+            ind += 1
+            
+        for name, layer in self.layer3.named_children():
+            layer_name = f'mask.{ind}'
+            self.masks[layer_name] = layer.mask
+            ind += 1
+            
         return self.masks
 
     def get_active_neuron_counts(self):
@@ -171,28 +187,24 @@ class ResNet(nn.Module):
         return out
 
     def load_pretrained_weights(self, state_dict):
-        # ایجاد یک کپی از state dict برای جلوگیری از تغییر اصلی
         new_state_dict = {}
         
-        # تبدیل کلیدها برای سازگاری با مدل‌های پیش‌آموزش دیده
         for key, value in state_dict.items():
             new_key = key
             
-            # بررسی DataParallel
+            # Handle DataParallel wrapping
             if new_key.startswith('module.'):
                 new_key = new_key[7:]
                 
-            # تبدیل fc به linear
+            # Handle fc vs linear naming
             if new_key.startswith('fc.'):
                 new_key = new_key.replace('fc.', 'linear.', 1)
                 
-            # تبدیل نام‌های مربوط به downsample
+            # Handle layer specific naming differences
             if 'downsample.0' in new_key:
                 new_key = new_key.replace('downsample.0', 'shortcut.0')
             if 'downsample.1' in new_key:
                 new_key = new_key.replace('downsample.1', 'shortcut.1')
-                
-            # در CIFAR10، برخی مدل‌ها از ساختار متفاوتی استفاده می‌کنند
             if 'downsample.conv' in new_key:
                 new_key = new_key.replace('downsample.conv', 'shortcut.0')
             if 'downsample.bn' in new_key:
@@ -200,30 +212,32 @@ class ResNet(nn.Module):
                 
             new_state_dict[new_key] = value
         
-        # بارگذاری وزن‌ها با تطبیق انعطاف‌پذیر
+        # First try strict loading
         try:
             self.load_state_dict(new_state_dict, strict=True)
-            print("✓ وزن‌ها با strict=True بارگذاری شدند")
+            print("✓ Model weights loaded successfully with strict=True")
+            return [], []
         except RuntimeError as e:
-            print(f"⚠ هشدار: {str(e)[:100]}...")
-            print("در حال تلاش با strict=False...")
+            print(f"⚠ Warning: {str(e)[:200]}...")
+            print("Trying with strict=False...")
             missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
             
             if missing_keys:
-                print(f"کلیدهای گمشده ({len(missing_keys)}):")
-                for k in missing_keys[:5]:
+                print(f"Missing keys ({len(missing_keys)}):")
+                for k in missing_keys[:10]:
                     print(f"  - {k}")
-                if len(missing_keys) > 5:
-                    print(f"  ... و {len(missing_keys)-5} مورد دیگر")
+                if len(missing_keys) > 10:
+                    print(f"  ... and {len(missing_keys)-10} more")
             
             if unexpected_keys:
-                print(f"کلیدهای اضافی ({len(unexpected_keys)}):")
-                for k in unexpected_keys[:5]:
+                print(f"Unexpected keys ({len(unexpected_keys)}):")
+                for k in unexpected_keys[:10]:
                     print(f"  + {k}")
-                if len(unexpected_keys) > 5:
-                    print(f"  ... و {len(unexpected_keys)-5} مورد دیگر")
+                if len(unexpected_keys) > 10:
+                    print(f"  ... and {len(unexpected_keys)-10} more")
             
-            print("✓ وزن‌ها با strict=False بارگذاری شدند")
+            print("✓ Model weights loaded with strict=False")
+            return list(missing_keys), list(unexpected_keys)
 
 
 def resnet20(num_classes=10, finding_masks=True):
@@ -248,18 +262,51 @@ def resnet110(num_classes=10, finding_masks=True):
 
 # تست ساده برای تأیید عملکرد
 if __name__ == "__main__":
+    import numpy as np
+    
+    # تست مدل ResNet20
     model = resnet20(finding_masks=True)
-    print("مدل ResNet20 با موفقیت ساخته شد")
+    print("✓ ResNet20 model created successfully")
     
     # تست forward pass
     x = torch.randn(2, 3, 32, 32)
     y = model(x)
-    print(f"Shape خروجی: {y.shape}")
+    print(f"✓ Forward pass successful. Output shape: {y.shape}")
     
     # تست هوک‌های mask
     model.hook_masks()
     masks = model.get_masks()
-    print(f"تعداد maskها: {len(masks)}")
+    print(f"✓ Number of mask layers: {len(masks)}")
+    
+    # تست forward pass با هوک‌ها
+    y = model(x)
+    print(f"✓ Forward pass with hooks successful. Captured {len(model.masks_outputs)} mask outputs")
+    
+    # تست شمارش نورون‌های فعال
+    counts = model.get_active_neuron_counts()
+    print(f"✓ Active neurons per layer: {counts}")
+    print(f"✓ Total active neurons: {np.sum(counts)}")
     
     # پاک کردن هوک‌ها
     model.remove_hooks()
+    print("✓ Hooks removed successfully")
+    
+    # تست بارگذاری وزن‌های پیش‌آموزش دیده (شبیه‌سازی)
+    print("\nTesting pretrained weight loading...")
+    dummy_state_dict = {
+        'conv1.weight': torch.randn(16, 3, 3, 3),
+        'bn1.weight': torch.randn(16),
+        'bn1.bias': torch.randn(16),
+        'layer1.0.conv1.weight': torch.randn(16, 16, 3, 3),
+        'layer1.0.bn1.weight': torch.randn(16),
+        'layer1.0.bn1.bias': torch.randn(16),
+        'layer1.0.conv2.weight': torch.randn(16, 16, 3, 3),
+        'layer1.0.bn2.weight': torch.randn(16),
+        'layer1.0.bn2.bias': torch.randn(16),
+        'layer1.0.shortcut.0.weight': torch.randn(16, 16, 1, 1),  # شبیه‌سازی کلیدهای مختلف
+        'linear.weight': torch.randn(10, 64),
+        'linear.bias': torch.randn(10)
+    }
+    
+    missing, unexpected = model.load_pretrained_weights(dummy_state_dict)
+    print(f"✓ Tested pretrained weight loading with {len(missing)} missing keys and {len(unexpected)} unexpected keys")

@@ -69,51 +69,44 @@ class BasicBlock(nn.Module):
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != planes:
             if option == 'A':
-                """
-                For CIFAR10 ResNet paper uses option A.
-                """
                 self.shortcut = LambdaLayer(lambda x:
-                                            F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, (planes - in_planes) // 2, planes - in_planes - (planes - in_planes) // 2), "constant", 0))
+                    F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, (planes - in_planes) // 2, planes - in_planes - (planes - in_planes) // 2), "constant", 0))
             elif option == 'B':
                 self.shortcut = nn.Sequential(
                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
                     nn.BatchNorm2d(self.expansion * planes)
                 )
         
-        self.finding_masks = finding_masks
         self.mask = Mask((1, planes, 1, 1), finding_masks)
-        self.activation_applied = False  # Flag to track if ReLU is applied
+        self.activation_applied = False
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
         out = F.relu(out)
-        self.activation_applied = True
         out = self.mask(out)
         return out
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, finding_masks=True):
+    def __init__(self, block, num_blocks, in_cfg, out_cfg, num_classes=10, finding_masks=True):
         super(ResNet, self).__init__()
-        self.in_planes = 16
+        self.in_planes = out_cfg[0]
         self.finding_masks = finding_masks
         
-        # Initial convolution layer
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
+        # Initial convolution layer with configurable input/output channels
+        self.conv1 = nn.Conv2d(in_cfg[0], out_cfg[0], kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_cfg[0])
         
-        # ResNet layers
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        # ResNet layers with configurable channels
+        self.layer1 = self._make_layer(block, in_cfg[1:4], out_cfg[1:4], num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, in_cfg[4:7], out_cfg[4:7], num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, in_cfg[7:10], out_cfg[7:10], num_blocks[2], stride=2)
         
         # Final classifier
-        self.linear = nn.Linear(64, num_classes)
-        
-        # For compatibility with pretrained models
-        self.fc = self.linear
+        self.linear = nn.Linear(out_cfg[-1], num_classes)
+        self.fc = self.linear  # برای سازگاری با مدل‌های پیش‌آموزش دیده
         
         # Hook-related attributes
         self.handlers = []
@@ -122,12 +115,12 @@ class ResNet(nn.Module):
         
         self.apply(_weights_init)
 
-    def _make_layer(self, block, planes, num_blocks, stride):
+    def _make_layer(self, block, in_cfg_slice, out_cfg_slice, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, finding_masks=self.finding_masks))
-            self.in_planes = planes * block.expansion
+        for i, stride in enumerate(strides):
+            layers.append(block(in_cfg_slice[i], out_cfg_slice[i], stride, finding_masks=self.finding_masks))
+            self.in_planes = out_cfg_slice[i] * block.expansion
         return nn.Sequential(*layers)
 
     def hook_mask(self, layer, mask_name):
@@ -136,35 +129,32 @@ class ResNet(nn.Module):
         return layer.register_forward_hook(hook_function)
 
     def hook_masks(self):
-        """Register forward hooks to capture mask outputs"""
-        self.remove_hooks()  # Remove any existing hooks first
-        
+        self.remove_hooks()
         ind = 0
-        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
-            for block_idx, block in enumerate(layer):
+        
+        # Register hooks for all mask layers
+        for layer_group in [self.layer1, self.layer2, self.layer3]:
+            for block in layer_group:
                 layer_name = f'mask.{ind}'
                 self.handlers.append(self.hook_mask(block.mask, layer_name))
                 ind += 1
 
     def remove_hooks(self):
-        """Remove all forward hooks"""
         for handler in self.handlers:
             handler.remove()
         self.handlers = []
 
     def get_masks(self):
-        """Get all mask modules"""
         self.masks = {}
         ind = 0
-        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
-            for block_idx, block in enumerate(layer):
+        for layer_group in [self.layer1, self.layer2, self.layer3]:
+            for block in layer_group:
                 layer_name = f'mask.{ind}'
                 self.masks[layer_name] = block.mask
                 ind += 1
         return self.masks
 
     def get_active_neuron_counts(self):
-        """Get count of active neurons for each mask layer"""
         active_counts = []
         masks = self.get_masks()
         for key in sorted(masks.keys()):
@@ -185,11 +175,9 @@ class ResNet(nn.Module):
         return out
 
     def load_pretrained_weights(self, state_dict):
-        """Load weights from pretrained model with key mapping for compatibility"""
         # Create a copy of the state dict to avoid modifying the original
         new_state_dict = {}
         
-        # Map keys to handle differences between implementations
         for key, value in state_dict.items():
             new_key = key
             
@@ -212,43 +200,42 @@ class ResNet(nn.Module):
         # Load the weights with flexible matching
         self.load_state_dict(new_state_dict, strict=False)
         
-        # Verify critical layers were loaded
+        # Return information about missing/unexpected keys
+        missing_keys, unexpected_keys = [], []
         loaded_keys = set(new_state_dict.keys())
         model_keys = set(self.state_dict().keys())
         
-        missing_keys = model_keys - loaded_keys
-        unexpected_keys = loaded_keys - model_keys
+        missing_keys = list(model_keys - loaded_keys)
+        unexpected_keys = list(loaded_keys - model_keys)
         
         return missing_keys, unexpected_keys
 
 
-def resnet20(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes, finding_masks=finding_masks)
+def resnet20(finding_masks, in_cfg, out_cfg, num_classes=10):
+    return ResNet(BasicBlock, [3, 3, 3], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet32(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [5, 5, 5], num_classes=num_classes, finding_masks=finding_masks)
+def resnet32(finding_masks, in_cfg, out_cfg, num_classes=10):
+    return ResNet(BasicBlock, [5, 5, 5], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet44(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [7, 7, 7], num_classes=num_classes, finding_masks=finding_masks)
+def resnet44(finding_masks, in_cfg, out_cfg, num_classes=10):
+    return ResNet(BasicBlock, [7, 7, 7], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet56(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [9, 9, 9], num_classes=num_classes, finding_masks=finding_masks)
+def resnet56(finding_masks, in_cfg, out_cfg, num_classes=10):
+    return ResNet(BasicBlock, [9, 9, 9], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet110(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [18, 18, 18], num_classes=num_classes, finding_masks=finding_masks)
-
-
-def resnet1202(num_classes=10, finding_masks=True):
-    return ResNet(BasicBlock, [200, 200, 200], num_classes=num_classes, finding_masks=finding_masks)
+def resnet110(finding_masks, in_cfg, out_cfg, num_classes=10):
+    return ResNet(BasicBlock, [18, 18, 18], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
 
 
 def test():
-    """Simple test to verify model construction and forward pass"""
-    net = resnet20(finding_masks=True)
+    in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
+    out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
+    
+    net = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg)
     net.hook_masks()
     masks = net.get_masks()
     
@@ -261,16 +248,12 @@ def test():
     y = net(x)
     print("\nOutput shape:", y.shape)
     
-    # Print mask status
-    print("\nMask outputs captured:", len(net.masks_outputs))
-    
     # Get active neuron counts
     counts = net.get_active_neuron_counts()
     print("\nActive neurons per layer:", counts)
     
     # Clean up hooks
     net.remove_hooks()
-    print("\nHooks removed successfully")
 
     return net
 

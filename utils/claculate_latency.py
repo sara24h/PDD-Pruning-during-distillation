@@ -1,6 +1,6 @@
 import time
 import torch
-from efficientnet_pytorch import EfficientNet
+#from efficientnet_pytorch import EfficientNet
 from tqdm import tqdm
 
 
@@ -44,4 +44,5 @@ def compute_latency_ms_pytorch(model, input, iterations=None):
     torch.cuda.empty_cache()
     # FPS = 1000 / latency (in ms)
     return latency
+
 

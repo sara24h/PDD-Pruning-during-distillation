@@ -66,14 +66,18 @@ def main_worker(args):
         model = resnet56(num_classes=args.num_classes)
         if args.pretrained:
             if args.set == 'cifar10':
-                # استفاده از فایل دانلود شده از GitHub
                 ckpt_path = 'pretrained_model/cifar10_resnet56-187c023a.pt'
+
                 if not os.path.exists(ckpt_path):
-                    print(f"Warning: Pretrained model not found at {ckpt_path}")
-                    print("Please download it from: https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt")
-                    raise FileNotFoundError(f"Pretrained model not found: {ckpt_path}")
-                
+                    print(f"Downloading pretrained ResNet56 model...")
+                    os.makedirs('pretrained_model', exist_ok=True)
+                    import urllib.request
+                    url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt'
+                    urllib.request.urlretrieve(url, ckpt_path)
+                    print(f"Download completed: {ckpt_path}")
+            
                 ckpt = torch.load(ckpt_path, map_location='cuda:%d' % args.gpu)
+
             elif args.set == 'cifar100':
                 ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet56/cifar100/scores.pt', map_location='cuda:%d' % args.gpu)
     elif args.arch == 'resnet110':
@@ -180,4 +184,5 @@ def ApproxSign(mask):
 if __name__ == "__main__":
     # setup: python train_kd.py --gpu 3 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 --lr_decay_step 20,40  --num_classes 10 --pretrained --arch_s cvgg11_bn
     main()
+
 

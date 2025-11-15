@@ -5,7 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch import nn
-from Hrank_resnet import resnet_110
+#from Hrank_resnet import resnet_110
 from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
@@ -245,3 +245,4 @@ def ApproxSign(mask):
 if __name__ == "__main__":
 
     main()
+

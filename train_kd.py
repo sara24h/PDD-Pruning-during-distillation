@@ -1,11 +1,11 @@
 import os
 import sys
+import torch
 import torch.nn.parallel
 import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch import nn
-#from Hrank_resnet import resnet_110
 from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
@@ -16,6 +16,161 @@ from trainer.trainer import validate, train, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger, get_lr
 from vgg_kd import cvgg11_bn
 import torch.nn.functional as F
+
+
+def convert_checkpoint_keys(checkpoint):
+    """
+    تبدیل کلیدهای checkpoint برای سازگاری با معماری مدل
+    fc -> linear (برای ResNet از pytorch-cifar-models)
+    """
+    new_checkpoint = {}
+    for key, value in checkpoint.items():
+        # تبدیل fc به linear
+        if key.startswith('fc.'):
+            new_key = key.replace('fc.', 'linear.')
+            new_checkpoint[new_key] = value
+            print(f"  Converted: {key} -> {new_key}")
+        else:
+            new_checkpoint[key] = value
+    return new_checkpoint
+
+
+def load_teacher_checkpoint(args):
+    """بارگذاری checkpoint مدل Teacher با مدیریت خطا"""
+    ckpt = None
+    
+    if args.arch == 'cvgg16_bn':
+        if args.pretrained:
+            if args.set == 'cifar10':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar10/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
+            elif args.set == 'cifar100':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar100/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
+                
+    elif args.arch == 'cvgg19_bn':
+        if args.pretrained:
+            if args.set == 'cifar10':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar10/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
+            elif args.set == 'cifar100':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar100/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
+                
+    elif args.arch == 'resnet56':
+        if args.pretrained:
+            if args.set == 'cifar10':
+                print("=" * 80)
+                print("Downloading ResNet-56 CIFAR-10 checkpoint from internet...")
+                print("=" * 80)
+                checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt'
+                try:
+                    raw_checkpoint = torch.hub.load_state_dict_from_url(
+                        checkpoint_url, 
+                        map_location='cuda:%d' % args.gpu,
+                        progress=True,
+                        check_hash=True
+                    )
+                    print("✓ Checkpoint downloaded successfully!")
+                    print("Converting checkpoint keys...")
+                    ckpt = convert_checkpoint_keys(raw_checkpoint)
+                    print("✓ Keys converted successfully!")
+                    
+                except Exception as e:
+                    print(f"✗ Error downloading checkpoint: {e}")
+                    print("Trying local file...")
+                    try:
+                        save = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet56.th', 
+                                        map_location='cuda:%d' % args.gpu)
+                        if isinstance(save, dict) and 'state_dict' in save:
+                            ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
+                        else:
+                            ckpt = {k.replace('module.', ''): v for k, v in save.items()}
+                        ckpt = convert_checkpoint_keys(ckpt)
+                    except Exception as local_e:
+                        print(f"✗ Error loading local file: {local_e}")
+                        raise
+                        
+            elif args.set == 'cifar100':
+                print("=" * 80)
+                print("Downloading ResNet-56 CIFAR-100 checkpoint from internet...")
+                print("=" * 80)
+                checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet56-f2eff4c8.pt'
+                try:
+                    raw_checkpoint = torch.hub.load_state_dict_from_url(
+                        checkpoint_url, 
+                        map_location='cuda:%d' % args.gpu,
+                        progress=True,
+                        check_hash=True
+                    )
+                    print("✓ Checkpoint downloaded successfully!")
+                    print("Converting checkpoint keys...")
+                    ckpt = convert_checkpoint_keys(raw_checkpoint)
+                    print("✓ Keys converted successfully!")
+                    
+                except Exception as e:
+                    print(f"✗ Error downloading checkpoint: {e}")
+                    print("Trying local file...")
+                    ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet56/cifar100/scores.pt', 
+                                    map_location='cuda:%d' % args.gpu)
+                    ckpt = convert_checkpoint_keys(ckpt)
+                    
+    elif args.arch == 'resnet110':
+        if args.pretrained:
+            if args.set == 'cifar10':
+                print("=" * 80)
+                print("Downloading ResNet-110 CIFAR-10 checkpoint from internet...")
+                print("=" * 80)
+                checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet110-1d1ed7c2.pt'
+                try:
+                    raw_checkpoint = torch.hub.load_state_dict_from_url(
+                        checkpoint_url, 
+                        map_location='cuda:%d' % args.gpu,
+                        progress=True,
+                        check_hash=True
+                    )
+                    print("✓ Checkpoint downloaded successfully!")
+                    print("Converting checkpoint keys...")
+                    ckpt = convert_checkpoint_keys(raw_checkpoint)
+                    print("✓ Keys converted successfully!")
+                    
+                except Exception as e:
+                    print(f"✗ Error downloading checkpoint: {e}")
+                    print("Trying local file...")
+                    save = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet110.th', 
+                                    map_location='cuda:%d' % args.gpu)
+                    if isinstance(save, dict) and 'state_dict' in save:
+                        ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
+                    else:
+                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
+                    ckpt = convert_checkpoint_keys(ckpt)
+                    
+            elif args.set == 'cifar100':
+                print("=" * 80)
+                print("Downloading ResNet-110 CIFAR-100 checkpoint from internet...")
+                print("=" * 80)
+                checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet110-c8a8dd84.pt'
+                try:
+                    raw_checkpoint = torch.hub.load_state_dict_from_url(
+                        checkpoint_url, 
+                        map_location='cuda:%d' % args.gpu,
+                        progress=True,
+                        check_hash=True
+                    )
+                    print("✓ Checkpoint downloaded successfully!")
+                    print("Converting checkpoint keys...")
+                    ckpt = convert_checkpoint_keys(raw_checkpoint)
+                    print("✓ Keys converted successfully!")
+                    
+                except Exception as e:
+                    print(f"✗ Error downloading checkpoint: {e}")
+                    print("Trying local file...")
+                    ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet110/cifar100/scores.pt', 
+                                    map_location='cuda:%d' % args.gpu)
+                    ckpt = convert_checkpoint_keys(ckpt)
+    
+    return ckpt
+
 
 def main():
     print(args)
@@ -42,159 +197,72 @@ def main_worker(args):
     logger.info(args.num_classes)
 
     # ایجاد مدل Student
+    print("\n" + "=" * 80)
+    print("Creating Student Model...")
+    print("=" * 80)
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(finding_masks=True, num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
         in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
         model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes)
+    print(f"✓ Student model created: {args.arch_s}")
 
-    # ایجاد و بارگذاری مدل Teacher
+    # ایجاد مدل Teacher
+    print("\n" + "=" * 80)
+    print("Creating Teacher Model...")
+    print("=" * 80)
     if args.arch == 'cvgg16_bn':
         model = cvgg16_bn(num_classes=args.num_classes, batch_norm=True)
-        if args.pretrained:
-            if args.set == 'cifar10':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar10/scores.pt', map_location='cuda:%d' % args.gpu)
-            elif args.set == 'cifar100':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar100/scores.pt', map_location='cuda:%d' % args.gpu)
     elif args.arch == 'cvgg19_bn':
         model = cvgg19_bn(num_classes=args.num_classes, batch_norm=True)
-        if args.pretrained:
-            if args.set == 'cifar10':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar10/scores.pt', map_location='cuda:%d' % args.gpu)
-            elif args.set == 'cifar100':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar100/scores.pt', map_location='cuda:%d' % args.gpu)
     elif args.arch == 'resnet56':
         model = resnet56(num_classes=args.num_classes)
-        if args.pretrained:
-            if args.set == 'cifar10':
-                print("Downloading ResNet-56 CIFAR-10 checkpoint from internet...")
-                try:
-                    # استفاده مستقیم از torch.hub برای بارگذاری مدل کامل
-                    model_pretrained = torch.hub.load(
-                        "chenyaofo/pytorch-cifar-models", 
-                        "cifar10_resnet56", 
-                        pretrained=True,
-                        verbose=False
-                    )
-                    ckpt = model_pretrained.state_dict()
-                    print("Checkpoint downloaded successfully!")
-                except Exception as e:
-                    print(f"Error downloading from torch.hub: {e}")
-                    print("Trying direct URL download...")
-                    checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt'
-                    save = torch.hub.load_state_dict_from_url(
-                        checkpoint_url, 
-                        map_location='cuda:%d' % args.gpu,
-                        progress=True
-                    )
-                    if isinstance(save, dict) and 'state_dict' in save:
-                        ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
-                    else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
-            elif args.set == 'cifar100':
-                print("Downloading ResNet-56 CIFAR-100 checkpoint from internet...")
-                try:
-                    model_pretrained = torch.hub.load(
-                        "chenyaofo/pytorch-cifar-models", 
-                        "cifar100_resnet56", 
-                        pretrained=True,
-                        verbose=False
-                    )
-                    ckpt = model_pretrained.state_dict()
-                    print("Checkpoint downloaded successfully!")
-                except Exception as e:
-                    print(f"Error downloading from torch.hub: {e}")
-                    print("Trying direct URL download...")
-                    checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet56-f2eff4c8.pt'
-                    save = torch.hub.load_state_dict_from_url(
-                        checkpoint_url, 
-                        map_location='cuda:%d' % args.gpu,
-                        progress=True
-                    )
-                    if isinstance(save, dict) and 'state_dict' in save:
-                        ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
-                    else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
     elif args.arch == 'resnet110':
         model = resnet110(num_classes=args.num_classes)
-        if args.pretrained:
-            if args.set == 'cifar10':
-                print("Downloading ResNet-110 CIFAR-10 checkpoint from internet...")
-                try:
-                    model_pretrained = torch.hub.load(
-                        "chenyaofo/pytorch-cifar-models", 
-                        "cifar10_resnet110", 
-                        pretrained=True,
-                        verbose=False
-                    )
-                    ckpt = model_pretrained.state_dict()
-                    print("Checkpoint downloaded successfully!")
-                except Exception as e:
-                    print(f"Error downloading from torch.hub: {e}")
-                    checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet110-1d1ed7c2.pt'
-                    save = torch.hub.load_state_dict_from_url(
-                        checkpoint_url, 
-                        map_location='cuda:%d' % args.gpu,
-                        progress=True
-                    )
-                    if isinstance(save, dict) and 'state_dict' in save:
-                        ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
-                    else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
-            elif args.set == 'cifar100':
-                print("Downloading ResNet-110 CIFAR-100 checkpoint from internet...")
-                try:
-                    model_pretrained = torch.hub.load(
-                        "chenyaofo/pytorch-cifar-models", 
-                        "cifar100_resnet110", 
-                        pretrained=True,
-                        verbose=False
-                    )
-                    ckpt = model_pretrained.state_dict()
-                    print("Checkpoint downloaded successfully!")
-                except Exception as e:
-                    print(f"Error downloading from torch.hub: {e}")
-                    checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet110-c8a8dd84.pt'
-                    save = torch.hub.load_state_dict_from_url(
-                        checkpoint_url, 
-                        map_location='cuda:%d' % args.gpu,
-                        progress=True
-                    )
-                    if isinstance(save, dict) and 'state_dict' in save:
-                        ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
-                    else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
+    print(f"✓ Teacher model created: {args.arch}")
 
-    # بارگذاری وزن‌های Teacher با بررسی دقیق
-    try:
-        model.load_state_dict(ckpt, strict=True)
-        print("✓ Teacher model loaded successfully (strict mode)")
-    except Exception as e:
-        print(f"Warning: Could not load in strict mode: {e}")
-        print("Attempting to load with strict=False...")
-        missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
-        if missing_keys:
-            print(f"Missing keys: {missing_keys[:5]}...")  # نمایش 5 کلید اول
-        if unexpected_keys:
-            print(f"Unexpected keys: {unexpected_keys[:5]}...")
-    
+    # بارگذاری checkpoint
+    if args.pretrained:
+        print("\n" + "=" * 80)
+        print("Loading Teacher Checkpoint...")
+        print("=" * 80)
+        ckpt = load_teacher_checkpoint(args)
+        
+        if ckpt is not None:
+            # بارگذاری با مدیریت خطا
+            try:
+                model.load_state_dict(ckpt, strict=True)
+                print("✓ Checkpoint loaded successfully (strict mode)!")
+            except RuntimeError as e:
+                print(f"⚠ Warning: Could not load in strict mode")
+                print(f"  Error: {str(e)[:200]}...")
+                print("  Attempting to load with strict=False...")
+                
+                missing_keys, unexpected_keys = model.load_state_dict(ckpt, strict=False)
+                
+                if missing_keys:
+                    print(f"  Missing keys ({len(missing_keys)}): {missing_keys[:3]}...")
+                if unexpected_keys:
+                    print(f"  Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:3]}...")
+                
+                # بررسی اینکه آیا کلیدهای مهم بارگذاری شدند
+                if not missing_keys or all('num_batches_tracked' in k for k in missing_keys):
+                    print("✓ Checkpoint loaded successfully (non-strict mode)!")
+                else:
+                    print("✗ Warning: Some important keys are missing!")
+
+    # انتقال مدل‌ها به GPU
     model_s = set_gpu(args, model_s)
     model = set_gpu(args, model)
 
     # فریز کردن پارامترهای Teacher
+    print("\n" + "=" * 80)
+    print("Freezing Teacher Model Parameters...")
+    print("=" * 80)
     for param in model.parameters():
         param.requires_grad = False
-
-    # چاپ وضعیت پارامترها (فقط برای debug)
-    print("Teacher Model Parameters:")
-    for name, param in model.named_parameters():
-        print(f"Parameter: {name}, Requires Gradient: {param.requires_grad}")
-
-    print('-'*100)
-    print("Student Model Parameters:")
-    for name, param in model_s.named_parameters():
-        print(f"Parameter: {name}, Requires Gradient: {param.requires_grad}")
+    print("✓ All teacher parameters frozen")
     
     model.eval()
 
@@ -202,41 +270,45 @@ def main_worker(args):
     divergence_loss = F.kl_div
     criterion = nn.CrossEntropyLoss().cuda()
     
-    # ✅ انتخاب دیتاست صحیح بر اساس args.set
+    # انتخاب دیتاست
+    print("\n" + "=" * 80)
+    print("Loading Dataset...")
+    print("=" * 80)
     if args.set == 'cifar10':
         data = CIFAR10()
-        print("=" * 80)
-        print("Using CIFAR-10 dataset (10 classes)")
-        print("=" * 80)
+        print(f"✓ Using CIFAR-10 dataset ({args.num_classes} classes)")
     elif args.set == 'cifar100':
         data = CIFAR100()
-        print("=" * 80)
-        print("Using CIFAR-100 dataset (100 classes)")
-        print("=" * 80)
+        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes)")
     else:
         raise ValueError(f"Unknown dataset: {args.set}. Must be 'cifar10' or 'cifar100'")
 
     # اعتبارسنجی دقت Teacher
-    print("Validating teacher model...")
+    print("\n" + "=" * 80)
+    print("Validating Teacher Model...")
+    print("=" * 80)
     acc1, acc5 = validate(data.val_loader, model, criterion, args)
-    print(f"Teacher model accuracy: Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
-    
-    # بررسی دقت teacher
-    if acc1 < 50.0:  # برای CIFAR-10 دقت teacher باید بالای 90% باشد
-        print(f"\n{'!'*80}")
-        print("WARNING: Teacher model has very low accuracy!")
-        print("This suggests the checkpoint may not be compatible with your model architecture.")
-        print("Please check:")
-        print("  1. Model architecture matches the checkpoint")
-        print("  2. Number of classes is correct")
-        print("  3. Checkpoint is for the correct dataset")
-        print(f"{'!'*80}\n")
-        response = input("Continue anyway? (yes/no): ")
-        if response.lower() != 'yes':
-            print("Exiting...")
-            return
+    print(f"Teacher Accuracy - Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
+
+    # بررسی دقت Teacher
+    if acc1 < 50:
+        print("\n" + "!" * 80)
+        print("⚠ WARNING: Teacher model has very low accuracy!")
+        print("This may indicate:")
+        print("  1. Checkpoint architecture mismatch")
+        print("  2. Wrong number of classes")
+        print("  3. Incompatible dataset")
+        print("!" * 80)
+        
+        response = input("\nDo you want to continue anyway? (yes/no): ")
+        if response.lower() not in ['yes', 'y']:
+            print("Training cancelled.")
+            sys.exit(0)
 
     # تنظیم optimizer
+    print("\n" + "=" * 80)
+    print("Setting up Optimizer and Scheduler...")
+    print("=" * 80)
     optimizer = torch.optim.SGD(
         model_s.parameters(), 
         lr=args.lr, 
@@ -244,13 +316,14 @@ def main_worker(args):
         weight_decay=args.weight_decay
     )
     
-    # تنظیم learning rate scheduler
     lr_decay_step = list(map(int, args.lr_decay_step.split(',')))
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, 
         milestones=lr_decay_step, 
         gamma=0.1
     )
+    print(f"✓ Optimizer: SGD (lr={args.lr}, momentum={args.momentum}, weight_decay={args.weight_decay})")
+    print(f"✓ Scheduler: MultiStepLR (milestones={lr_decay_step}, gamma=0.1)")
 
     best_acc1 = 0.0
     best_acc5 = 0.0
@@ -262,13 +335,14 @@ def main_worker(args):
     layer_num = []
     
     # شروع آموزش
-    print("=" * 80)
+    print("\n" + "=" * 80)
     print("Starting Knowledge Distillation Training...")
+    print(f"Total Epochs: {args.epochs}")
     print("=" * 80)
     
     for epoch in range(args.start_epoch, args.epochs):
         print(f"\n{'='*80}")
-        print(f"Epoch [{epoch+1}/{args.epochs}]")
+        print(f"Epoch [{epoch+1}/{args.epochs}] - LR: {get_lr(optimizer):.6f}")
         print(f"{'='*80}")
         
         train_acc1, train_acc5 = train_KD(
@@ -284,9 +358,10 @@ def main_worker(args):
         
         acc1, acc5 = validate(data.val_loader, model_s, criterion, args)
         
-        print(f"\nEpoch {epoch+1} Results:")
+        print(f"\nEpoch {epoch+1} Summary:")
         print(f"  Train - Top-1: {train_acc1:.2f}%, Top-5: {train_acc5:.2f}%")
         print(f"  Val   - Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
+        print(f"  Best  - Top-1: {best_acc1:.2f}%, Top-5: {best_acc5:.2f}%")
         
         scheduler.step()
 
@@ -317,8 +392,8 @@ def main_worker(args):
                 logger.info(f"Layer neurons: {layer_num}")
                 
                 print(f"\n{'*'*80}")
-                print(f"✓ New Best Model! Accuracy: {acc1:.2f}%")
-                print(f"  Active neurons per layer: {layer_num}")
+                print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")
+                print(f"   Active neurons per layer: {layer_num}")
                 print(f"{'*'*80}\n")
 
                 to = {'layer_num': layer_num, 'mask': mask_list}
@@ -328,12 +403,13 @@ def main_worker(args):
                 torch.save(to, mask_path)
                 torch.save(model_s.state_dict(), model_path)
                 
-                print(f"Saved mask to: {mask_path}")
-                print(f"Saved model to: {model_path}")
+                print(f"✓ Saved mask to: {mask_path}")
+                print(f"✓ Saved model to: {model_path}")
 
     print("\n" + "=" * 80)
-    print("Training completed!")
-    print(f"Best validation accuracy: {best_acc1:.2f}%")
+    print("🎊 Training Completed Successfully!")
+    print(f"Best Validation Accuracy: {best_acc1:.2f}%")
+    print(f"Best Training Accuracy: {best_train_acc1:.2f}%")
     print("=" * 80)
 
 
@@ -350,16 +426,10 @@ def ApproxSign(mask):
     out = (out + 1) / 2
     return out
 
+
 if __name__ == "__main__":
     # مثال استفاده:
-    # CIFAR-10 (توجه: epochs را افزایش دهید برای نتایج بهتر):
-    # python train_kd.py --gpu 0 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 10 --pretrained --arch_s resnet20
+    # CIFAR-10:
     
-    # CIFAR-100:
-    # python train_kd.py --gpu 0 --arch resnet56 --set cifar100 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 200 --lr_decay_step 100,150 --num_classes 100 --pretrained --arch_s resnet20
-    
-    # نکته مهم: اگر teacher model دقت پایین دارد، احتمالا ساختار مدل شما با checkpoint سازگار نیست
-    # در این صورت باید از مدل‌های torch.hub مستقیماً استفاده کنید یا ساختار مدل را تطبیق دهید
-    
+ 
     main()
-

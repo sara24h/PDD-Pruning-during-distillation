@@ -160,25 +160,34 @@ class ResNet(nn.Module):
         self.masks = {}
 
     def _make_layer(self, block, planes, num_blocks, stride, finding_masks=True, in_cfg=None, out_cfg=None):
-        """
-        ساخت یک مرحله (stage) از شبکه ResNet
-        هر مرحله شامل چندین بلوک پایه است
-        """
-        strides = [stride] + [1]*(num_blocks-1)
-        layers = []
+  
+    strides = [stride] + [1]*(num_blocks-1)
+    layers = []
+    
+    for i, stride in enumerate(strides):
+        # تعداد کانال‌های ورودی
+        if in_cfg is not None:
+            if isinstance(in_cfg, (list, tuple)) and len(in_cfg) > i:
+                in_planes = in_cfg[i]
+            else:
+                in_planes = self.in_planes
+        else:
+            in_planes = self.in_planes
         
-        for i, stride in enumerate(strides):
-            # تعداد کانال‌های ورودی و خروجی از تنظیمات
-            in_planes = in_cfg[i] if in_cfg else self.in_planes
-            out_planes = out_cfg[i] if out_cfg else planes
-            
-            # ساخت بلوک با تنظیمات مشخص شده
-            layers.append(block(in_planes, out_planes, stride, finding_masks=finding_masks))
-            
-            # به‌روزرسانی تعداد کانال‌های ورودی برای بلوک بعدی
-            self.in_planes = out_planes * block.expansion
-            
-        return nn.Sequential(*layers)
+        # تعداد کانال‌های خروجی
+        if out_cfg is not None:
+            if isinstance(out_cfg, (list, tuple)) and len(out_cfg) > i:
+                out_planes = out_cfg[i]
+            else:
+                out_planes = planes
+        else:
+            out_planes = planes
+        
+        layers.append(block(in_planes, out_planes, stride, finding_masks=finding_masks))
+
+        self.in_planes = out_planes * block.expansion
+        
+    return nn.Sequential(*layers)
 
     def hook_mask(self, layer, mask_name):
         """ثبت یک هوک برای دریافت خروجی یک لایه ماسک"""
@@ -421,3 +430,4 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("همه تست‌ها با موفقیت انجام شد!")
     print("=" * 80)
+

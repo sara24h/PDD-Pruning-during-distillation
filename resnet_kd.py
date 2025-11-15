@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
-from torch.autograd import Variable
 
 __all__ = ['ResNet', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110']
 
@@ -30,12 +29,7 @@ class Mask(nn.Module):
         else:
             return self.binary_mask * x
 
-    def extra_repr(self):
-        s = ('size={size}, finding_masks={finding_masks}')
-        return s.format(**self.__dict__)
-
     def apply_threshold(self, threshold=0.5):
-        """Convert learned mask to binary mask based on threshold"""
         self.binary_mask = (self.mask > threshold).float().detach()
         self.finding_masks = False
         return self.binary_mask.sum().item()
@@ -67,18 +61,20 @@ class BasicBlock(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
 
         self.shortcut = nn.Sequential()
+        # اصلاح مسیر کوتاه برای CIFAR10 - استفاده از پیاده‌سازی استاندارد
         if stride != 1 or in_planes != planes:
             if option == 'A':
+                # پیاده‌سازی صحیح برای CIFAR10 با استفاده از padding
                 self.shortcut = LambdaLayer(lambda x:
-                    F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, (planes - in_planes) // 2, planes - in_planes - (planes - in_planes) // 2), "constant", 0))
+                    F.pad(x[:, :, ::stride, ::stride], (0, 0, 0, 0, (planes - x.size(1))//2, planes - x.size(1) - (planes - x.size(1))//2), "constant", 0))
             elif option == 'B':
+                # پیاده‌سازی جایگزین با کانولوشن 1x1
                 self.shortcut = nn.Sequential(
                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
                     nn.BatchNorm2d(self.expansion * planes)
                 )
         
         self.mask = Mask((1, planes, 1, 1), finding_masks)
-        self.activation_applied = False
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
@@ -90,37 +86,37 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, in_cfg, out_cfg, num_classes=10, finding_masks=True):
+    def __init__(self, block, num_blocks, num_classes=10, finding_masks=True):
         super(ResNet, self).__init__()
-        self.in_planes = out_cfg[0]
+        self.in_planes = 16
         self.finding_masks = finding_masks
         
-        # Initial convolution layer with configurable input/output channels
-        self.conv1 = nn.Conv2d(in_cfg[0], out_cfg[0], kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_cfg[0])
+        # لایه اولیه کانولوشن
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(16)
         
-        # ResNet layers with configurable channels
-        self.layer1 = self._make_layer(block, in_cfg[1:4], out_cfg[1:4], num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, in_cfg[4:7], out_cfg[4:7], num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, in_cfg[7:10], out_cfg[7:10], num_blocks[2], stride=2)
+        # لایه‌های ResNet
+        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1, finding_masks=finding_masks)
+        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2, finding_masks=finding_masks)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2, finding_masks=finding_masks)
         
-        # Final classifier
-        self.linear = nn.Linear(out_cfg[-1], num_classes)
+        # طبقه‌بند نهایی
+        self.linear = nn.Linear(64, num_classes)
         self.fc = self.linear  # برای سازگاری با مدل‌های پیش‌آموزش دیده
         
-        # Hook-related attributes
+        # ویژگی‌های مربوط به mask
         self.handlers = []
         self.masks_outputs = {}
         self.masks = {}
         
         self.apply(_weights_init)
 
-    def _make_layer(self, block, in_cfg_slice, out_cfg_slice, num_blocks, stride):
+    def _make_layer(self, block, planes, num_blocks, stride, finding_masks=True):
         strides = [stride] + [1] * (num_blocks - 1)
         layers = []
-        for i, stride in enumerate(strides):
-            layers.append(block(in_cfg_slice[i], out_cfg_slice[i], stride, finding_masks=self.finding_masks))
-            self.in_planes = out_cfg_slice[i] * block.expansion
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride, finding_masks=finding_masks))
+            self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
     def hook_mask(self, layer, mask_name):
@@ -132,10 +128,10 @@ class ResNet(nn.Module):
         self.remove_hooks()
         ind = 0
         
-        # Register hooks for all mask layers
-        for layer_group in [self.layer1, self.layer2, self.layer3]:
-            for block in layer_group:
-                layer_name = f'mask.{ind}'
+        # ثبت هوک‌ها برای تمام لایه‌های mask
+        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
+            for j, block in enumerate(layer):
+                layer_name = 'mask.{}'.format(ind)
                 self.handlers.append(self.hook_mask(block.mask, layer_name))
                 ind += 1
 
@@ -147,9 +143,9 @@ class ResNet(nn.Module):
     def get_masks(self):
         self.masks = {}
         ind = 0
-        for layer_group in [self.layer1, self.layer2, self.layer3]:
-            for block in layer_group:
-                layer_name = f'mask.{ind}'
+        for i, layer in enumerate([self.layer1, self.layer2, self.layer3]):
+            for j, block in enumerate(layer):
+                layer_name = 'mask.{}'.format(ind)
                 self.masks[layer_name] = block.mask
                 ind += 1
         return self.masks
@@ -175,88 +171,95 @@ class ResNet(nn.Module):
         return out
 
     def load_pretrained_weights(self, state_dict):
-        # Create a copy of the state dict to avoid modifying the original
+        # ایجاد یک کپی از state dict برای جلوگیری از تغییر اصلی
         new_state_dict = {}
         
+        # تبدیل کلیدها برای سازگاری با مدل‌های پیش‌آموزش دیده
         for key, value in state_dict.items():
             new_key = key
             
-            # Handle DataParallel wrapping
+            # بررسی DataParallel
             if new_key.startswith('module.'):
                 new_key = new_key[7:]
                 
-            # Handle fc vs linear naming
+            # تبدیل fc به linear
             if new_key.startswith('fc.'):
                 new_key = new_key.replace('fc.', 'linear.', 1)
                 
-            # Handle layer specific naming differences
+            # تبدیل نام‌های مربوط به downsample
             if 'downsample.0' in new_key:
                 new_key = new_key.replace('downsample.0', 'shortcut.0')
             if 'downsample.1' in new_key:
                 new_key = new_key.replace('downsample.1', 'shortcut.1')
                 
+            # در CIFAR10، برخی مدل‌ها از ساختار متفاوتی استفاده می‌کنند
+            if 'downsample.conv' in new_key:
+                new_key = new_key.replace('downsample.conv', 'shortcut.0')
+            if 'downsample.bn' in new_key:
+                new_key = new_key.replace('downsample.bn', 'shortcut.1')
+                
             new_state_dict[new_key] = value
         
-        # Load the weights with flexible matching
-        self.load_state_dict(new_state_dict, strict=False)
-        
-        # Return information about missing/unexpected keys
-        missing_keys, unexpected_keys = [], []
-        loaded_keys = set(new_state_dict.keys())
-        model_keys = set(self.state_dict().keys())
-        
-        missing_keys = list(model_keys - loaded_keys)
-        unexpected_keys = list(loaded_keys - model_keys)
-        
-        return missing_keys, unexpected_keys
+        # بارگذاری وزن‌ها با تطبیق انعطاف‌پذیر
+        try:
+            self.load_state_dict(new_state_dict, strict=True)
+            print("✓ وزن‌ها با strict=True بارگذاری شدند")
+        except RuntimeError as e:
+            print(f"⚠ هشدار: {str(e)[:100]}...")
+            print("در حال تلاش با strict=False...")
+            missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
+            
+            if missing_keys:
+                print(f"کلیدهای گمشده ({len(missing_keys)}):")
+                for k in missing_keys[:5]:
+                    print(f"  - {k}")
+                if len(missing_keys) > 5:
+                    print(f"  ... و {len(missing_keys)-5} مورد دیگر")
+            
+            if unexpected_keys:
+                print(f"کلیدهای اضافی ({len(unexpected_keys)}):")
+                for k in unexpected_keys[:5]:
+                    print(f"  + {k}")
+                if len(unexpected_keys) > 5:
+                    print(f"  ... و {len(unexpected_keys)-5} مورد دیگر")
+            
+            print("✓ وزن‌ها با strict=False بارگذاری شدند")
 
 
-def resnet20(finding_masks, in_cfg, out_cfg, num_classes=10):
-    return ResNet(BasicBlock, [3, 3, 3], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
+def resnet20(num_classes=10, finding_masks=True):
+    return ResNet(BasicBlock, [3, 3, 3], num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet32(finding_masks, in_cfg, out_cfg, num_classes=10):
-    return ResNet(BasicBlock, [5, 5, 5], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
+def resnet32(num_classes=10, finding_masks=True):
+    return ResNet(BasicBlock, [5, 5, 5], num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet44(finding_masks, in_cfg, out_cfg, num_classes=10):
-    return ResNet(BasicBlock, [7, 7, 7], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
+def resnet44(num_classes=10, finding_masks=True):
+    return ResNet(BasicBlock, [7, 7, 7], num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet56(finding_masks, in_cfg, out_cfg, num_classes=10):
-    return ResNet(BasicBlock, [9, 9, 9], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
+def resnet56(num_classes=10, finding_masks=True):
+    return ResNet(BasicBlock, [9, 9, 9], num_classes=num_classes, finding_masks=finding_masks)
 
 
-def resnet110(finding_masks, in_cfg, out_cfg, num_classes=10):
-    return ResNet(BasicBlock, [18, 18, 18], in_cfg=in_cfg, out_cfg=out_cfg, num_classes=num_classes, finding_masks=finding_masks)
+def resnet110(num_classes=10, finding_masks=True):
+    return ResNet(BasicBlock, [18, 18, 18], num_classes=num_classes, finding_masks=finding_masks)
 
 
-def test():
-    in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-    out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-    
-    net = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg)
-    net.hook_masks()
-    masks = net.get_masks()
-    
-    print("Model Architecture:")
-    print(net)
-    print("\nNumber of masks:", len(masks))
-    
-    # Test forward pass
-    x = torch.randn(2, 3, 32, 32)
-    y = net(x)
-    print("\nOutput shape:", y.shape)
-    
-    # Get active neuron counts
-    counts = net.get_active_neuron_counts()
-    print("\nActive neurons per layer:", counts)
-    
-    # Clean up hooks
-    net.remove_hooks()
-
-    return net
-
-
+# تست ساده برای تأیید عملکرد
 if __name__ == "__main__":
-    model = test()
+    model = resnet20(finding_masks=True)
+    print("مدل ResNet20 با موفقیت ساخته شد")
+    
+    # تست forward pass
+    x = torch.randn(2, 3, 32, 32)
+    y = model(x)
+    print(f"Shape خروجی: {y.shape}")
+    
+    # تست هوک‌های mask
+    model.hook_masks()
+    masks = model.get_masks()
+    print(f"تعداد maskها: {len(masks)}")
+    
+    # پاک کردن هوک‌ها
+    model.remove_hooks()

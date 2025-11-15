@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 
 def load_teacher_checkpoint(args):
-    """بارگذاری checkpoint مدل Teacher با مدیریت خطا"""
+
     ckpt = None
     
     if args.arch == 'cvgg16_bn':
@@ -182,15 +182,20 @@ def main_worker(args):
         ckpt = load_teacher_checkpoint(args)
         
         if ckpt is not None:
-            # ✅ تطبیق نام کلیدها (fc -> linear)
+            # ✅ تطبیق نام کلیدها (fc -> linear, downsample -> shortcut)
             new_ckpt = {}
             for key, value in ckpt.items():
+                new_key = key
+                # تبدیل fc به linear
                 if key.startswith('fc.'):
                     new_key = key.replace('fc.', 'linear.')
-                    new_ckpt[new_key] = value
                     print(f"  Renamed: {key} -> {new_key}")
-                else:
-                    new_ckpt[key] = value
+                # تبدیل downsample به shortcut
+                elif 'downsample' in key:
+                    new_key = key.replace('downsample', 'shortcut')
+                    print(f"  Renamed: {key} -> {new_key}")
+                
+                new_ckpt[new_key] = value
             
             # بارگذاری با strict=True (حالا باید کار کند)
             try:
@@ -262,11 +267,7 @@ def main_worker(args):
         print("  2. Wrong dataset")
         print("  3. Model architecture mismatch")
         print("!" * 80)
-        
-        response = input("\nDo you want to continue anyway? (yes/no): ")
-        if response.lower() not in ['yes', 'y']:
-            print("Training cancelled.")
-            sys.exit(0)
+
 
     # تنظیم optimizer
     print("\n" + "=" * 80)
@@ -377,7 +378,7 @@ def main_worker(args):
 
 
 def ApproxSign(mask):
-    """تابع محاسبه علامت تقریبی برای ماسک‌ها"""
+
     out_forward = torch.sign(mask)
     mask1 = mask < -1
     mask2 = mask < 0

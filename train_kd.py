@@ -11,6 +11,7 @@ import datetime
 from data.Data import CIFAR10, CIFAR100
 from model.VGG_cifar import cvgg16_bn, cvgg19_bn
 from model.samll_resnet import resnet56, resnet110
+# ✅ resnet20 را از resnet_kd import کنید (نه از samll_resnet)
 from resnet_kd import resnet20
 from trainer.trainer import validate, train, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger, get_lr
@@ -205,7 +206,9 @@ def main_worker(args):
     elif args.arch_s == 'resnet20':
         in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-        model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes)
+        # ✅ استفاده از option='B' برای سازگاری با checkpoint
+        model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, 
+                          num_classes=args.num_classes, option='B')
     print(f"✓ Student model created: {args.arch_s}")
 
     # ایجاد مدل Teacher
@@ -430,6 +433,9 @@ def ApproxSign(mask):
 if __name__ == "__main__":
     # مثال استفاده:
     # CIFAR-10:
+    # python train_kd.py --gpu 0 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 10 --pretrained --arch_s resnet20
     
- 
+    # CIFAR-100:
+    # python train_kd.py --gpu 0 --arch resnet56 --set cifar100 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 100 --pretrained --arch_s resnet20
+    
     main()

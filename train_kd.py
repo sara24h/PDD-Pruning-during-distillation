@@ -1,3 +1,17 @@
+"""
+PDD: Pruning Neural Networks During Knowledge Distillation
+Implementation according to the paper specifications
+
+Key Paper Details:
+- 50 epochs for distillation (NOT full training)
+- Learning rate decayed by 0.1 at epochs 20 and 40
+- Initial LR: 0.01
+- Batch size: 256 (paper), 128 (for limited memory)
+- Weight decay: 0.005
+- Momentum: 0.9
+- Loss: L_total = L(z_s, z_t) + CE(z_s, Y) (Equation 4)
+"""
+
 import os
 import sys
 import torch
@@ -10,7 +24,6 @@ from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
 from model.VGG_cifar import cvgg16_bn, cvgg19_bn
-# ✅ برای Teacher از resnet_kd استفاده کنید (همان معماری checkpoint)
 from resnet_kd import resnet20, resnet56, resnet110
 from trainer.trainer import validate, train, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger, get_lr
@@ -19,32 +32,13 @@ import torch.nn.functional as F
 
 
 def load_teacher_checkpoint(args):
-
     ckpt = None
     
-    if args.arch == 'cvgg16_bn':
-        if args.pretrained:
-            if args.set == 'cifar10':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar10/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
-            elif args.set == 'cifar100':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar100/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
-                
-    elif args.arch == 'cvgg19_bn':
-        if args.pretrained:
-            if args.set == 'cifar10':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar10/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
-            elif args.set == 'cifar100':
-                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg19_bn/cifar100/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
-                
-    elif args.arch == 'resnet56':
+    if args.arch == 'resnet56':
         if args.pretrained:
             if args.set == 'cifar10':
                 print("=" * 80)
-                print("Downloading ResNet-56 CIFAR-10 checkpoint from internet...")
+                print("Downloading ResNet-56 CIFAR-10 checkpoint...")
                 print("=" * 80)
                 checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt'
                 try:
@@ -55,7 +49,6 @@ def load_teacher_checkpoint(args):
                         check_hash=True
                     )
                     print("✓ Checkpoint downloaded successfully!")
-                    # نیازی به تبدیل کلید ندارد - fc همان linear است
                     
                 except Exception as e:
                     print(f"✗ Error downloading checkpoint: {e}")
@@ -63,7 +56,7 @@ def load_teacher_checkpoint(args):
                         
             elif args.set == 'cifar100':
                 print("=" * 80)
-                print("Downloading ResNet-56 CIFAR-100 checkpoint from internet...")
+                print("Downloading ResNet-56 CIFAR-100 checkpoint...")
                 print("=" * 80)
                 checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet56-f2eff4c8.pt'
                 try:
@@ -83,7 +76,7 @@ def load_teacher_checkpoint(args):
         if args.pretrained:
             if args.set == 'cifar10':
                 print("=" * 80)
-                print("Downloading ResNet-110 CIFAR-10 checkpoint from internet...")
+                print("Downloading ResNet-110 CIFAR-10 checkpoint...")
                 print("=" * 80)
                 checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet110-1d1ed7c2.pt'
                 try:
@@ -101,7 +94,7 @@ def load_teacher_checkpoint(args):
                     
             elif args.set == 'cifar100':
                 print("=" * 80)
-                print("Downloading ResNet-110 CIFAR-100 checkpoint from internet...")
+                print("Downloading ResNet-110 CIFAR-100 checkpoint...")
                 print("=" * 80)
                 checkpoint_url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar100_resnet110-c8a8dd84.pt'
                 try:
@@ -116,6 +109,15 @@ def load_teacher_checkpoint(args):
                 except Exception as e:
                     print(f"✗ Error downloading checkpoint: {e}")
                     raise
+    
+    elif args.arch == 'cvgg16_bn':
+        if args.pretrained:
+            if args.set == 'cifar10':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar10/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
+            elif args.set == 'cifar100':
+                ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/cvgg16_bn/cifar100/scores.pt', 
+                                map_location='cuda:%d' % args.gpu)
     
     return ckpt
 
@@ -135,30 +137,33 @@ def main_worker(args):
     if not os.path.isdir('pretrained_model/' + args.arch + '/' + args.set):
         os.makedirs('pretrained_model/' + args.arch + '/' + args.set, exist_ok=True)
     logger = get_logger('pretrained_model/' + args.arch + '/' + args.set + '/logger' + now + '.log')
-    logger.info(args.arch)
-    logger.info(args.set)
-    logger.info(args.batch_size)
-    logger.info(args.weight_decay)
-    logger.info(args.lr)
-    logger.info(args.epochs)
-    logger.info(args.lr_decay_step)
-    logger.info(args.num_classes)
+    
+    # Log configuration
+    logger.info(f"PDD Configuration:")
+    logger.info(f"  Teacher: {args.arch}")
+    logger.info(f"  Student: {args.arch_s}")
+    logger.info(f"  Dataset: {args.set}")
+    logger.info(f"  Batch size: {args.batch_size}")
+    logger.info(f"  Weight decay: {args.weight_decay}")
+    logger.info(f"  Learning rate: {args.lr}")
+    logger.info(f"  Epochs: {args.epochs} (Paper uses 50 for distillation)")
+    logger.info(f"  LR decay steps: {args.lr_decay_step} (Paper: 20,40)")
+    logger.info(f"  Num classes: {args.num_classes}")
 
-    # ایجاد مدل Student
+    # ✅ Create Student Model with dynamic masks (PDD)
     print("\n" + "=" * 80)
-    print("Creating Student Model...")
+    print("Creating Student Model with Dynamic Masks...")
     print("=" * 80)
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(finding_masks=True, num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
         in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-        # استفاده از option='B' برای سازگاری با checkpoint
         model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, 
                           num_classes=args.num_classes, option='B')
-    print(f"✓ Student model created: {args.arch_s}")
+    print(f"✓ Student model created: {args.arch_s} (with differentiable masks)")
 
-    # ✅ ایجاد مدل Teacher با همان معماری checkpoint (option='B')
+    # ✅ Create Teacher Model
     print("\n" + "=" * 80)
     print("Creating Teacher Model...")
     print("=" * 80)
@@ -167,14 +172,12 @@ def main_worker(args):
     elif args.arch == 'cvgg19_bn':
         model = cvgg19_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch == 'resnet56':
-        # ✅ استفاده از option='B' برای مطابقت با checkpoint
         model = resnet56(num_classes=args.num_classes, option='B', finding_masks=False)
     elif args.arch == 'resnet110':
-        # ✅ استفاده از option='B' برای مطابقت با checkpoint
         model = resnet110(num_classes=args.num_classes, option='B', finding_masks=False)
     print(f"✓ Teacher model created: {args.arch}")
 
-    # بارگذاری checkpoint
+    # ✅ Load Teacher Checkpoint
     if args.pretrained:
         print("\n" + "=" * 80)
         print("Loading Teacher Checkpoint...")
@@ -182,47 +185,37 @@ def main_worker(args):
         ckpt = load_teacher_checkpoint(args)
         
         if ckpt is not None:
-            # ✅ تطبیق نام کلیدها (fc -> linear, downsample -> shortcut)
+            # Fix key names (fc -> linear, downsample -> shortcut)
             new_ckpt = {}
             for key, value in ckpt.items():
                 new_key = key
-                # تبدیل fc به linear
                 if key.startswith('fc.'):
                     new_key = key.replace('fc.', 'linear.')
                     print(f"  Renamed: {key} -> {new_key}")
-                # تبدیل downsample به shortcut
                 elif 'downsample' in key:
                     new_key = key.replace('downsample', 'shortcut')
                     print(f"  Renamed: {key} -> {new_key}")
                 
                 new_ckpt[new_key] = value
             
-            # بارگذاری با strict=True (حالا باید کار کند)
             try:
                 model.load_state_dict(new_ckpt, strict=True)
                 print("✓ Checkpoint loaded successfully!")
             except RuntimeError as e:
                 print(f"✗ Error loading checkpoint: {e}")
-                print("\nAttempting non-strict loading...")
+                print("Attempting non-strict loading...")
                 missing_keys, unexpected_keys = model.load_state_dict(new_ckpt, strict=False)
                 
                 if missing_keys:
                     print(f"  Missing keys ({len(missing_keys)}): {missing_keys[:5]}")
                 if unexpected_keys:
                     print(f"  Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:5]}")
-                
-                # بررسی اینکه آیا فقط num_batches_tracked هستند
-                important_missing = [k for k in missing_keys if 'num_batches_tracked' not in k]
-                if not important_missing:
-                    print("✓ Only batch norm tracking keys missing (this is OK)")
-                else:
-                    print(f"⚠ Warning: Important keys missing: {important_missing[:3]}")
 
-    # انتقال مدل‌ها به GPU
+    # Move models to GPU
     model_s = set_gpu(args, model_s)
     model = set_gpu(args, model)
 
-    # فریز کردن پارامترهای Teacher
+    # ✅ Freeze Teacher parameters (paper requirement)
     print("\n" + "=" * 80)
     print("Freezing Teacher Model Parameters...")
     print("=" * 80)
@@ -232,11 +225,11 @@ def main_worker(args):
     
     model.eval()
 
-    # تعریف loss ها
-    divergence_loss = F.kl_div
+    # ✅ Define loss functions (according to paper)
     criterion = nn.CrossEntropyLoss().cuda()
+    divergence_loss = F.kl_div  # Will be used in train_KD
     
-    # انتخاب دیتاست
+    # Load dataset
     print("\n" + "=" * 80)
     print("Loading Dataset...")
     print("=" * 80)
@@ -247,29 +240,25 @@ def main_worker(args):
         data = CIFAR100()
         print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes)")
     else:
-        raise ValueError(f"Unknown dataset: {args.set}. Must be 'cifar10' or 'cifar100'")
+        raise ValueError(f"Unknown dataset: {args.set}")
 
-    # اعتبارسنجی دقت Teacher
+    # ✅ Validate Teacher accuracy
     print("\n" + "=" * 80)
     print("Validating Teacher Model...")
     print("=" * 80)
     acc1, acc5 = validate(data.val_loader, model, criterion, args)
     print(f"Teacher Accuracy - Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
 
-    # بررسی دقت Teacher
-    if acc1 < 80:  # ResNet-56 باید حدود 93% دقت داشته باشد
+    # Check teacher accuracy
+    expected_acc = 93.0 if args.set == 'cifar10' else 70.0
+    if acc1 < expected_acc - 5:
         print("\n" + "!" * 80)
         print("⚠ WARNING: Teacher model has lower than expected accuracy!")
-        print(f"   Expected: ~93% for ResNet-56 on CIFAR-10")
+        print(f"   Expected: ~{expected_acc}% for {args.arch} on {args.set.upper()}")
         print(f"   Got: {acc1:.2f}%")
-        print("This may indicate:")
-        print("  1. Checkpoint loading issue")
-        print("  2. Wrong dataset")
-        print("  3. Model architecture mismatch")
         print("!" * 80)
 
-
-    # تنظیم optimizer
+    # ✅ Setup optimizer (paper parameters)
     print("\n" + "=" * 80)
     print("Setting up Optimizer and Scheduler...")
     print("=" * 80)
@@ -280,6 +269,7 @@ def main_worker(args):
         weight_decay=args.weight_decay
     )
     
+    # ✅ Paper specifies: decay at epochs 20 and 40
     lr_decay_step = list(map(int, args.lr_decay_step.split(',')))
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, 
@@ -298,10 +288,10 @@ def main_worker(args):
     mask_list = []
     layer_num = []
     
-    # شروع آموزش
+    # ✅ Start training (Paper: 50 epochs)
     print("\n" + "=" * 80)
-    print("Starting Knowledge Distillation Training...")
-    print(f"Total Epochs: {args.epochs}")
+    print("Starting PDD Training (Pruning During Distillation)...")
+    print(f"Total Epochs: {args.epochs} (Paper recommends 50)")
     print("=" * 80)
     
     for epoch in range(args.start_epoch, args.epochs):
@@ -309,10 +299,11 @@ def main_worker(args):
         print(f"Epoch [{epoch+1}/{args.epochs}] - LR: {get_lr(optimizer):.6f}")
         print(f"{'='*80}")
         
+        # ✅ Training with KD loss (Equation 4 from paper)
         train_acc1, train_acc5 = train_KD(
             data.train_loader, 
-            model, 
-            model_s, 
+            model,  # Teacher
+            model_s,  # Student
             divergence_loss, 
             criterion, 
             optimizer, 
@@ -320,6 +311,7 @@ def main_worker(args):
             args
         )
         
+        # Validation
         acc1, acc5 = validate(data.val_loader, model_s, criterion, args)
         
         print(f"\nEpoch {epoch+1} Summary:")
@@ -329,7 +321,7 @@ def main_worker(args):
         
         scheduler.step()
 
-        # ذخیره بهترین مدل
+        # Save best model
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
         best_acc5 = max(acc5, best_acc5)
@@ -339,6 +331,7 @@ def main_worker(args):
         
         if is_best or save or epoch == args.epochs - 1:
             if is_best:
+                # ✅ Extract masks (paper's differentiable mask approach)
                 mask_list = []
                 layer_num = []
                 model_s.hook_masks()
@@ -353,7 +346,7 @@ def main_worker(args):
                 model_s.remove_hooks()
                 
                 logger.info(f"New Best Accuracy: {acc1:.2f}%")
-                logger.info(f"Layer neurons: {layer_num}")
+                logger.info(f"Active neurons per layer: {layer_num}")
                 
                 print(f"\n{'*'*80}")
                 print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")
@@ -371,14 +364,14 @@ def main_worker(args):
                 print(f"✓ Saved model to: {model_path}")
 
     print("\n" + "=" * 80)
-    print("🎊 Training Completed Successfully!")
+    print("🎊 PDD Training Completed Successfully!")
     print(f"Best Validation Accuracy: {best_acc1:.2f}%")
     print(f"Best Training Accuracy: {best_train_acc1:.2f}%")
     print("=" * 80)
 
 
 def ApproxSign(mask):
-
+ 
     out_forward = torch.sign(mask)
     mask1 = mask < -1
     mask2 = mask < 0
@@ -392,11 +385,5 @@ def ApproxSign(mask):
 
 
 if __name__ == "__main__":
-    # مثال استفاده:
-    # CIFAR-10:
-    # python train_kd_fixed.py --gpu 0 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 10 --pretrained --arch_s resnet20
-    
-    # CIFAR-100:
-    # python train_kd_fixed.py --gpu 0 --arch resnet56 --set cifar100 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 100 --pretrained --arch_s resnet20
-    
+ 
     main()

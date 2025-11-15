@@ -41,6 +41,7 @@ def main_worker(args):
     logger.info(args.lr_decay_step)
     logger.info(args.num_classes)
 
+    # ایجاد مدل Student
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(finding_masks=True, num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
@@ -48,6 +49,7 @@ def main_worker(args):
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
         model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes)
 
+    # ایجاد و بارگذاری مدل Teacher
     if args.arch == 'cvgg16_bn':
         model = cvgg16_bn(num_classes=args.num_classes, batch_norm=True)
         if args.pretrained:
@@ -80,7 +82,7 @@ def main_worker(args):
                     if isinstance(save, dict) and 'state_dict' in save:
                         ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
                     else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items() if not k.startswith('fc.')}
+                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
                     print("Checkpoint downloaded successfully!")
                 except Exception as e:
                     print(f"Error downloading checkpoint: {e}")
@@ -101,7 +103,7 @@ def main_worker(args):
                     if isinstance(save, dict) and 'state_dict' in save:
                         ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
                     else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items() if not k.startswith('fc.')}
+                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
                     print("Checkpoint downloaded successfully!")
                 except Exception as e:
                     print(f"Error downloading checkpoint: {e}")
@@ -124,7 +126,7 @@ def main_worker(args):
                     if isinstance(save, dict) and 'state_dict' in save:
                         ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
                     else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items() if not k.startswith('fc.')}
+                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
                     print("Checkpoint downloaded successfully!")
                 except Exception as e:
                     print(f"Error downloading checkpoint: {e}")
@@ -144,22 +146,23 @@ def main_worker(args):
                     if isinstance(save, dict) and 'state_dict' in save:
                         ckpt = {k.replace('module.', ''): v for k, v in save['state_dict'].items()}
                     else:
-                        ckpt = {k.replace('module.', ''): v for k, v in save.items() if not k.startswith('fc.')}
+                        ckpt = {k.replace('module.', ''): v for k, v in save.items()}
                     print("Checkpoint downloaded successfully!")
                 except Exception as e:
                     print(f"Error downloading checkpoint: {e}")
                     print("Falling back to local file...")
                     ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet110/cifar100/scores.pt', map_location='cuda:%d' % args.gpu)
 
+    # بارگذاری وزن‌های Teacher
     model.load_state_dict(ckpt, strict=False)
     model_s = set_gpu(args, model_s)
     model = set_gpu(args, model)
 
-    # تنظیم requires_grad برای پارامترهای teacher model
+    # فریز کردن پارامترهای Teacher
     for param in model.parameters():
         param.requires_grad = False
 
-    # چاپ وضعیت پارامترها
+    # چاپ وضعیت پارامترها (فقط برای debug)
     print("Teacher Model Parameters:")
     for name, param in model.named_parameters():
         print(f"Parameter: {name}, Requires Gradient: {param.requires_grad}")
@@ -171,18 +174,43 @@ def main_worker(args):
     
     model.eval()
 
+    # تعریف loss ها
     divergence_loss = F.kl_div
     criterion = nn.CrossEntropyLoss().cuda()
-    data = CIFAR100()
+    
+    # ✅ انتخاب دیتاست صحیح بر اساس args.set
+    if args.set == 'cifar10':
+        data = CIFAR10()
+        print("=" * 80)
+        print("Using CIFAR-10 dataset (10 classes)")
+        print("=" * 80)
+    elif args.set == 'cifar100':
+        data = CIFAR100()
+        print("=" * 80)
+        print("Using CIFAR-100 dataset (100 classes)")
+        print("=" * 80)
+    else:
+        raise ValueError(f"Unknown dataset: {args.set}. Must be 'cifar10' or 'cifar100'")
 
+    # اعتبارسنجی دقت Teacher
     acc1, acc5 = validate(data.val_loader, model, criterion, args)
-    print("Teacher model accuracy: {}".format(acc1))
+    print(f"Teacher model accuracy: Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
 
-    optimizer = torch.optim.SGD(model_s.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    # تنظیم optimizer
+    optimizer = torch.optim.SGD(
+        model_s.parameters(), 
+        lr=args.lr, 
+        momentum=args.momentum, 
+        weight_decay=args.weight_decay
+    )
     
     # تنظیم learning rate scheduler
     lr_decay_step = list(map(int, args.lr_decay_step.split(',')))
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=lr_decay_step, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer, 
+        milestones=lr_decay_step, 
+        gamma=0.1
+    )
 
     best_acc1 = 0.0
     best_acc5 = 0.0
@@ -194,9 +222,31 @@ def main_worker(args):
     layer_num = []
     
     # شروع آموزش
+    print("=" * 80)
+    print("Starting Knowledge Distillation Training...")
+    print("=" * 80)
+    
     for epoch in range(args.start_epoch, args.epochs):
-        train_acc1, train_acc5 = train_KD(data.train_loader, model, model_s, divergence_loss, criterion, optimizer, epoch, args)
+        print(f"\n{'='*80}")
+        print(f"Epoch [{epoch+1}/{args.epochs}]")
+        print(f"{'='*80}")
+        
+        train_acc1, train_acc5 = train_KD(
+            data.train_loader, 
+            model, 
+            model_s, 
+            divergence_loss, 
+            criterion, 
+            optimizer, 
+            epoch, 
+            args
+        )
+        
         acc1, acc5 = validate(data.val_loader, model_s, criterion, args)
+        
+        print(f"\nEpoch {epoch+1} Results:")
+        print(f"  Train - Top-1: {train_acc1:.2f}%, Top-5: {train_acc5:.2f}%")
+        print(f"  Val   - Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
         
         scheduler.step()
 
@@ -222,17 +272,33 @@ def main_worker(args):
                     mask_list.append(msk)
 
                 model_s.remove_hooks()
-                logger.info(f"Best Accuracy: {acc1}")
+                
+                logger.info(f"New Best Accuracy: {acc1:.2f}%")
                 logger.info(f"Layer neurons: {layer_num}")
+                
+                print(f"\n{'*'*80}")
+                print(f"✓ New Best Model! Accuracy: {acc1:.2f}%")
+                print(f"  Active neurons per layer: {layer_num}")
+                print(f"{'*'*80}\n")
 
                 to = {'layer_num': layer_num, 'mask': mask_list}
-                torch.save(to, 'pretrained_model/' + args.arch + '/' + args.set + "/{}_T_{}_S_{}_mask.pt".format(args.set, args.arch, args.arch_s))
-                torch.save(model_s.state_dict(), 'pretrained_model/' + args.arch + '/' + args.set + "/{}_{}.pt".format(args.set, args.arch_s))
-                print(f"Saved best model at epoch {epoch} with accuracy {acc1:.2f}%")
+                mask_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt'
+                model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
+                
+                torch.save(to, mask_path)
+                torch.save(model_s.state_dict(), model_path)
+                
+                print(f"Saved mask to: {mask_path}")
+                print(f"Saved model to: {model_path}")
+
+    print("\n" + "=" * 80)
+    print("Training completed!")
+    print(f"Best validation accuracy: {best_acc1:.2f}%")
+    print("=" * 80)
 
 
 def ApproxSign(mask):
-
+    """تابع محاسبه علامت تقریبی برای ماسک‌ها"""
     out_forward = torch.sign(mask)
     mask1 = mask < -1
     mask2 = mask < 0
@@ -246,5 +312,10 @@ def ApproxSign(mask):
 
 if __name__ == "__main__":
     # مثال استفاده:
-    # python train_kd.py --gpu 0 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 --lr_decay_step 20,40 --num_classes 10 --pretrained --arch_s resnet20
+    # CIFAR-10:
+    # python train_kd.py --gpu 0 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 10 --pretrained --arch_s resnet20
+    
+    # CIFAR-100:
+    # python train_kd.py --gpu 0 --arch resnet56 --set cifar100 --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 160 --lr_decay_step 80,120 --num_classes 100 --pretrained --arch_s resnet20
+    
     main()

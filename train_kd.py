@@ -5,7 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch import nn
-#from Hrank_resnet import resnet_110
+from Hrank_resnet import resnet_110
 from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
@@ -66,8 +66,10 @@ def main_worker(args):
         model = resnet56(num_classes=args.num_classes)
         if args.pretrained:
             if args.set == 'cifar10':
+                # استفاده از فایل دانلود شده از GitHub
                 ckpt_path = 'pretrained_model/cifar10_resnet56-187c023a.pt'
-
+                
+                # دانلود خودکار اگر فایل وجود نداشته باشد
                 if not os.path.exists(ckpt_path):
                     print(f"Downloading pretrained ResNet56 model...")
                     os.makedirs('pretrained_model', exist_ok=True)
@@ -75,9 +77,22 @@ def main_worker(args):
                     url = 'https://github.com/chenyaofo/pytorch-cifar-models/releases/download/resnet/cifar10_resnet56-187c023a.pt'
                     urllib.request.urlretrieve(url, ckpt_path)
                     print(f"Download completed: {ckpt_path}")
-            
-                ckpt = torch.load(ckpt_path, map_location='cuda:%d' % args.gpu)
-
+                
+                # بارگذاری و تطبیق کلیدهای state_dict
+                ckpt_original = torch.load(ckpt_path, map_location='cuda:%d' % args.gpu)
+                ckpt = {}
+                
+                # تبدیل کلیدها برای سازگاری با مدل
+                for key, value in ckpt_original.items():
+                    # تبدیل fc به linear
+                    if key.startswith('fc.'):
+                        new_key = key.replace('fc.', 'linear.')
+                        ckpt[new_key] = value
+                    # حذف downsample layers که در مدل شما وجود ندارند
+                    elif 'downsample' not in key:
+                        ckpt[key] = value
+                
+                print(f"Loaded {len(ckpt)} parameters from pretrained model")
             elif args.set == 'cifar100':
                 ckpt = torch.load('/public/ly/Dynamic_Graph_Construction/pretrained_model/resnet56/cifar100/scores.pt', map_location='cuda:%d' % args.gpu)
     elif args.arch == 'resnet110':
@@ -184,5 +199,3 @@ def ApproxSign(mask):
 if __name__ == "__main__":
     # setup: python train_kd.py --gpu 3 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 --lr_decay_step 20,40  --num_classes 10 --pretrained --arch_s cvgg11_bn
     main()
-
-

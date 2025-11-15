@@ -160,34 +160,48 @@ class ResNet(nn.Module):
         self.masks = {}
 
     def _make_layer(self, block, planes, num_blocks, stride, finding_masks=True, in_cfg=None, out_cfg=None):
-  
-    strides = [stride] + [1]*(num_blocks-1)
-    layers = []
-    
-    for i, stride in enumerate(strides):
-        # تعداد کانال‌های ورودی
-        if in_cfg is not None:
-            if isinstance(in_cfg, (list, tuple)) and len(in_cfg) > i:
-                in_planes = in_cfg[i]
+        """
+        ساخت یک مرحله (stage) از شبکه ResNet
+        هر مرحله شامل چندین بلوک پایه است
+        
+        Args:
+            block: کلاس بلوک (مثلا BasicBlock)
+            planes: تعداد کانال‌های پیش‌فرض
+            num_blocks: تعداد بلوک‌ها در این مرحله
+            stride: stride برای اولین بلوک
+            finding_masks: آیا در حال یافتن ماسک‌ها هستیم؟
+            in_cfg: لیست تعداد کانال‌های ورودی برای هر بلوک (یا None)
+            out_cfg: لیست تعداد کانال‌های خروجی برای هر بلوک (یا None)
+        """
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        
+        for i, stride in enumerate(strides):
+            # تعداد کانال‌های ورودی
+            if in_cfg is not None:
+                if isinstance(in_cfg, (list, tuple)) and len(in_cfg) > i:
+                    in_planes = in_cfg[i]
+                else:
+                    in_planes = self.in_planes
             else:
                 in_planes = self.in_planes
-        else:
-            in_planes = self.in_planes
-        
-        # تعداد کانال‌های خروجی
-        if out_cfg is not None:
-            if isinstance(out_cfg, (list, tuple)) and len(out_cfg) > i:
-                out_planes = out_cfg[i]
+            
+            # تعداد کانال‌های خروجی
+            if out_cfg is not None:
+                if isinstance(out_cfg, (list, tuple)) and len(out_cfg) > i:
+                    out_planes = out_cfg[i]
+                else:
+                    out_planes = planes
             else:
                 out_planes = planes
-        else:
-            out_planes = planes
-        
-        layers.append(block(in_planes, out_planes, stride, finding_masks=finding_masks))
-
-        self.in_planes = out_planes * block.expansion
-        
-    return nn.Sequential(*layers)
+            
+            # ساخت بلوک با تنظیمات مشخص شده
+            layers.append(block(in_planes, out_planes, stride, finding_masks=finding_masks))
+            
+            # به‌روزرسانی تعداد کانال‌های ورودی برای بلوک بعدی
+            self.in_planes = out_planes * block.expansion
+            
+        return nn.Sequential(*layers)
 
     def hook_mask(self, layer, mask_name):
         """ثبت یک هوک برای دریافت خروجی یک لایه ماسک"""
@@ -430,4 +444,3 @@ if __name__ == "__main__":
     print("\n" + "=" * 80)
     print("همه تست‌ها با موفقیت انجام شد!")
     print("=" * 80)
-

@@ -5,7 +5,7 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch import nn
-from Hrank_resnet import resnet_110
+#from Hrank_resnet import resnet_110
 from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
@@ -180,3 +180,4 @@ def ApproxSign(mask):
 if __name__ == "__main__":
     # setup: python train_kd.py --gpu 3 --arch resnet56 --set cifar10 --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 --lr_decay_step 20,40  --num_classes 10 --pretrained --arch_s cvgg11_bn
     main()
+

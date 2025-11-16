@@ -7,9 +7,18 @@ from resnet_kd import resnet20
 from trainer.trainer import validate
 from utils.claculate_latency import compute_latency_ms_pytorch
 
-from utils.get_dataset import get_dataset
+from data.Data import CIFAR10, CIFAR100
 #from utils.get_model import get_model
 from vgg_kd import cvgg11_bn, cvgg11_bn_small
+
+def get_dataset(args):
+    """تابعی برای بارگذاری دیتاست"""
+    if args.set == 'cifar10':
+        return CIFAR10(batch_size=128)  # یا هر batch_size مناسب دیگر
+    elif args.set == 'cifar100':
+        return CIFAR100(batch_size=128)  # یا هر batch_size مناسب دیگر
+    else:
+        raise ValueError(f"Dataset {args.set} not supported")
 
 parser = argparse.ArgumentParser(description='Calculating flops and params')
 
@@ -28,18 +37,17 @@ parser.add_argument("--evaluate", dest="evaluate", action="store_true", help="ev
 parser.add_argument("--print-freq", default=100, type=int, metavar="N", help="print frequency (default: 10)")
 args = parser.parse_args()
 torch.cuda.set_device(args.gpu)
-# model = get_model(args).cuda()
 
 # python calculating_flops.py --gpu 3 --arch cvgg11_bn_small --pretrained --evaluate
 
 if args.arch == 'cvgg11_bn_small':
-    # mask = torch.load('/public/ly/xianyu/pretrained_model/cvgg16_bn/cifar100/cifar100_T_cvgg16_bn_S_cvgg11_bn_mask.pt')  # 要手动调整
-    # print(mask['layer_num'])
+    mask = torch.load('/public/ly/xianyu/pretrained_model/cvgg16_bn/cifar100/cifar100_T_cvgg16_bn_S_cvgg11_bn_mask.pt')  # 要手动调整
+    print(mask['layer_num'])
 
     model = cvgg11_bn_small(finding_masks=False, num_classes=args.num_classes, batch_norm=True).cuda()
     model.classifier[1] = torch.nn.Linear(398, 512).cuda()
-    # ckpt = torch.load('/public/ly/xianyu/pretrained_model/cvgg11_bn_small/cifar100/T_cvgg16_bn_S_cvgg11_bn_small_cifar100.pt')  # 要手动调整
-    # model.load_state_dict(ckpt)
+    ckpt = torch.load('/public/ly/xianyu/pretrained_model/cvgg11_bn_small/cifar100/T_cvgg16_bn_S_cvgg11_bn_small_cifar100.pt')  # 要手动调整
+    model.load_state_dict(ckpt)
 
 
 if args.arch == 'resnet20_small':
@@ -49,8 +57,8 @@ if args.arch == 'resnet20_small':
     out_cfg = [16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
 
     model = resnet20(finding_masks=False, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes).cuda()
-    # ckpt = torch.load('/public/ly/xianyu/pretrained_model/resnet20_small/cifar10/T_resnet56_S_resnet20_small_cifar10.pt',map_location='cuda:%d' % args.gpu)  # 要手动调整
-    # model.load_state_dict(ckpt)
+    ckpt = torch.load('/public/ly/xianyu/pretrained_model/resnet20_small/cifar10/T_resnet56_S_resnet20_small_cifar10.pt',map_location='cuda:%d' % args.gpu)  # 要手动调整
+    model.load_state_dict(ckpt)
 
 model.eval()
 criterion = torch.nn.CrossEntropyLoss().cuda()
@@ -60,7 +68,9 @@ if args.evaluate:
     if args.set in ['cifar10', 'cifar100']:
         acc1, acc5 = validate(data.val_loader, model, criterion, args)
     else:
-        acc1, acc5 = validate_ImageNet(data.val_loader, model, criterion, args)
+        # تابع validate_ImageNet را باید تعریف یا import کنید
+        # acc1, acc5 = validate_ImageNet(data.val_loader, model, criterion, args)
+        acc1, acc5 = validate(data.val_loader, model, criterion, args)  # جایگزین موقت
 
     print('Acc is {}'.format(acc1))
 

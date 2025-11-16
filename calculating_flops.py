@@ -66,12 +66,20 @@ if args.arch == 'cvgg11_bn_small':
 
 
 if args.arch == 'resnet20_small':
-    in_cfg = [3, 16, 14, 13, 28, 21, 24, 47, 69, 50]  # 要手动调整
+    in_cfg = [3, 16, 14, 13, 28, 21, 24, 47, 69, 50]  # 要手动調整
     out_cfg = [16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
 
     model = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes).cuda() # Changed to True
-    ckpt = torch.load('/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_T_resnet56_S_resnet20_mask.pt',map_location='cuda:%d' % args.gpu)  # 要手动调整
-    model.load_state_dict(ckpt)
+    ckpt = torch.load('/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_T_resnet56_S_resnet20_mask.pt',map_location='cuda:%d' % args.gpu)  # 要手动調整
+    
+    # creates a new ordered dictionary that only contains the mask parameters from the loaded checkpoint
+    new_ckpt = {}
+    for k, v in ckpt.items():
+        if "mask" in k:
+            new_ckpt[k] = v
+    model.load_state_dict(new_ckpt, strict=False)  #只加载部分参数，设置为 False
+
+
 
 model.eval()
 criterion = torch.nn.CrossEntropyLoss().cuda()
@@ -97,3 +105,4 @@ latency = compute_latency_ms_pytorch(model, input_image, iterations=None)
 print('Params: %.2f' % (params))
 print('Flops: %.2f' % (flops))
 print('Latency: %.2f' % (latency))
+

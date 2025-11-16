@@ -123,8 +123,8 @@ def train_KD(train_loader, model, model_s, divergence_loss, criterion, optimizer
     
     # Standard KD parameters (Hinton et al. 2015)
     # Paper doesn't specify these, so using standard values
-    temp = 3.0  # Standard temperature (Hinton uses 3-4)
-    alpha = 0.5  # Equal weight (paper equation suggests equal importance)
+    temp = 4.0  # Standard temperature (Hinton uses 3-4)
+    alpha = 0.8  # Equal weight (paper equation suggests equal importance)
 
     batch_size = train_loader.batch_size
     num_batches = len(train_loader)
@@ -197,3 +197,4 @@ def train_KD(train_loader, model, model_s, divergence_loss, criterion, optimizer
             progress.display(i)
 
     return top1.avg, top5.avg
+

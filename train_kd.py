@@ -275,6 +275,7 @@ def main_worker(args):
     args.start_epoch = args.start_epoch or 0
     mask_list = []
     layer_num = []
+    active_neurons = []
     
     # ✅ Start training (Paper: 50 epochs)
     print("\n" + "=" * 80)
@@ -378,3 +379,4 @@ def ApproxSign(mask):
 if __name__ == "__main__":
  
     main()
+

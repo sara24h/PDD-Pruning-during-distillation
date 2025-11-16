@@ -8,7 +8,7 @@ from trainer.trainer import validate
 from utils.claculate_latency import compute_latency_ms_pytorch
 
 from utils.get_dataset import get_dataset
-from utils.get_model import get_model
+#from utils.get_model import get_model
 from vgg_kd import cvgg11_bn, cvgg11_bn_small
 
 parser = argparse.ArgumentParser(description='Calculating flops and params')
@@ -74,4 +74,5 @@ latency = compute_latency_ms_pytorch(model, input_image, iterations=None)
 
 print('Params: %.2f' % (params))
 print('Flops: %.2f' % (flops))
+
 print('Latency: %.2f' % (latency))

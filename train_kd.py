@@ -1,17 +1,3 @@
-"""
-PDD: Pruning Neural Networks During Knowledge Distillation
-Implementation according to the paper specifications
-
-Key Paper Details:
-- 50 epochs for distillation (NOT full training)
-- Learning rate decayed by 0.1 at epochs 20 and 40
-- Initial LR: 0.01
-- Batch size: 256 (paper), 128 (for limited memory)
-- Weight decay: 0.005
-- Momentum: 0.9
-- Loss: L_total = L(z_s, z_t) + CE(z_s, Y) (Equation 4)
-"""
-
 import os
 import sys
 import torch
@@ -336,12 +322,14 @@ def main_worker(args):
                 layer_num = []
                 model_s.hook_masks()
                 masks = model_s.get_masks()
+                active_neurons = [] 
                 
                 for key in masks.keys():
                     msk = ApproxSign(masks[key].mask).squeeze()
                     total = torch.sum(msk)
                     layer_num.append(int(total.cpu().detach().numpy()))
                     mask_list.append(msk)
+                    active_neurons.append(int(total.cpu().detach().numpy()))
 
                 model_s.remove_hooks()
                 
@@ -387,4 +375,5 @@ def ApproxSign(mask):
 if __name__ == "__main__":
  
     main()
+
 

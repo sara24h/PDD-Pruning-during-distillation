@@ -373,9 +373,9 @@ def main_worker(args):
 def ApproxSign(mask):
  
     out_forward = torch.sign(mask)
-    mask1 = mask < -1
+    mask1 = mask < -0.5
     mask2 = mask < 0
-    mask3 = mask < 1
+    mask3 = mask < 0.5
     out1 = (-1) * mask1.type(torch.float32) + (mask * mask + 2 * mask) * (1 - mask1.type(torch.float32))
     out2 = out1 * mask2.type(torch.float32) + (-mask * mask + 2 * mask) * (1 - mask2.type(torch.float32))
     out3 = out2 * mask3.type(torch.float32) + 1 * (1 - mask3.type(torch.float32))
@@ -387,3 +387,4 @@ def ApproxSign(mask):
 if __name__ == "__main__":
  
     main()
+

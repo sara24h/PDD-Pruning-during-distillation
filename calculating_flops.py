@@ -57,7 +57,8 @@ if args.arch == 'resnet20_small':
     out_cfg = [16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
 
     model = resnet20(finding_masks=False, in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes).cuda()
-    ckpt = torch.load('/public/ly/xianyu/pretrained_model/resnet20_small/cifar10/T_resnet56_S_resnet20_small_cifar10.pt',map_location='cuda:%d' % args.gpu)  # 要手动调整
+    mask = torch.load('/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_T_resnet56_S_resnet20_mask.pt')
+    ckpt = torch.load('/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_resnet20.pt',map_location='cuda:%d' % args.gpu)  # 要手动调整
     model.load_state_dict(ckpt)
 
 model.eval()
@@ -86,3 +87,4 @@ print('Params: %.2f' % (params))
 print('Flops: %.2f' % (flops))
 
 print('Latency: %.2f' % (latency))
+

@@ -135,6 +135,8 @@ def main_worker(args):
     logger.info(f"  Epochs: {args.epochs} (Paper uses 50 for distillation)")
     logger.info(f"  LR decay steps: {args.lr_decay_step} (Paper: 20,40)")
     logger.info(f"  Num classes: {args.num_classes}")
+    logger.info(active_neurons)
+
 
     # ✅ Create Student Model with dynamic masks (PDD)
     print("\n" + "=" * 80)
@@ -342,8 +344,9 @@ def main_worker(args):
                 print(f"{'*'*80}\n")
 
                 to = {'layer_num': layer_num, 'mask': mask_list}
-                mask_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt'
-                model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
+                torch.save(to, 'pretrained_model/' + args.arch + '/' + args.set + "/{}_T_{}_S_{}_mask.pt".format(args.set, args.arch, args.arch_s))
+                torch.save(model_s.state_dict(), 'pretrained_model/' + args.arch + '/' + args.set + "/{}_{}.pt".format(args.set, args.arch_s))
+
                 
                 torch.save(to, mask_path)
                 torch.save(model_s.state_dict(), model_path)
@@ -375,5 +378,3 @@ def ApproxSign(mask):
 if __name__ == "__main__":
  
     main()
-
-

@@ -17,7 +17,7 @@ from vgg_kd import cvgg11_bn
 import torch.nn.functional as F
 
 def load_teacher_checkpoint(args):
-    """Load pretrained teacher checkpoint from PyTorch Hub or local path"""
+
     ckpt = None
    
     if args.arch == 'resnet56':
@@ -104,10 +104,7 @@ def load_teacher_checkpoint(args):
     return ckpt
 
 def ApproxSign(mask):
-    """
-    Differentiable approximation of sign function (Equation 2 in paper)
-    Converts continuous mask values to binary {0, 1}
-    """
+
     out_forward = torch.sign(mask)
     mask1 = mask < -1
     mask2 = mask < 0
@@ -249,10 +246,10 @@ def main_worker(args):
    
     if args.set == 'cifar10':
         data = CIFAR10()
-        print(f"✓ Using CIFAR-10 dataset ({args.num_classes} classes)")
+        print(f"Using CIFAR-10 dataset ({args.num_classes} classes)")
     elif args.set == 'cifar100':
         data = CIFAR100()
-        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes}")
+        print(f"Using CIFAR-100 dataset ({args.num_classes} classes)")
     else:
         raise ValueError(f"Unknown dataset: {args.set}")
     # ========================================================================================
@@ -395,3 +392,4 @@ def main_worker(args):
 
 if __name__ == "__main__":
     main()
+

@@ -121,89 +121,61 @@ def ApproxSign(mask):
     out = (out + 1) / 2  # Normalize to [0, 1]
     return out
 
-
 def copy_weights(model_s, pruned_model, kept_indices, args):
-    device = 'cuda:' + str(args.gpu)
+    device = f'cuda:{args.gpu}'
     state_dict_s = model_s.state_dict()
     state_dict_p = pruned_model.state_dict()
 
-    # copy conv1 and bn1
+    # conv1 + bn1 (همیشه کامل کپی میشه)
     for k in ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']:
-        state_dict_p[k] = state_dict_s[k]
+        state_dict_p[k].copy_(state_dict_s[k])
 
     block_idx = 0
-    in_indices = torch.arange(state_dict_s['bn1.weight'].shape[0]).to(device)  # full for after conv1
+    in_channels = 16  # بعد از conv1 همیشه 16 هست
 
-    for l, layer_name in enumerate(['layer1', 'layer2', 'layer3']):
-        for b in range(3):
+    for layer_name in ['layer1', 'layer2', 'layer3']:
+        num_blocks = 3  # برای resnet20 همیشه 3 تا بلاک در هر لایه
+        for b in range(num_blocks):
             prefix = f'{layer_name}.{b}.'
 
-            # conv1
-            state_dict_p[prefix + 'conv1.weight'] = state_dict_s[prefix + 'conv1.weight'][:, in_indices, :, :]
+            # conv1 + bn1 (ورودی از لایه قبلی)
+            state_dict_p[prefix + 'conv1.weight'].copy_(
+                state_dict_s[prefix + 'conv1.weight'][:, :in_channels, :, :]
+            )
+            for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
+                state_dict_p[prefix + f'bn1.{bn_k}'].copy_(
+                    state_dict_s[prefix + f'bn1.{bn_k}']
+                )
 
-            # bn1
-            internal_indices = torch.arange(state_dict_p[prefix + 'bn1.weight'].shape[0]).to(device)  # first for internal
-            state_dict_p[prefix + 'bn1.weight'] = state_dict_s[prefix + 'bn1.weight'] [internal_indices]
+            # conv2 + bn2 (اینجا پرون میشه)
+            out_channels = kept_indices[block_idx].shape[0]
+            state_dict_p[prefix + 'conv2.weight'].copy_(
+                state_dict_s[prefix + 'conv2.weight'][kept_indices[block_idx]][:, :in_channels, :, :]
+            )
+            for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
+                state_dict_p[prefix + f'bn2.{bn_k}'].copy_(
+                    state_dict_s[prefix + f'bn2.{bn_k}'][kept_indices[block_idx]]
+                )
 
-            state_dict_p[prefix + 'bn1.bias'] = state_dict_s[prefix + 'bn1.bias'] [internal_indices]
+            # Shortcut — مهم‌ترین قسمت! (درست شده)
+            if prefix + 'shortcut.0.weight' in state_dict_p:
+                state_dict_p[prefix + 'shortcut.0.weight'].copy_(
+                    state_dict_s[prefix + 'shortcut.0.weight'][kept_indices[block_idx]][:, :in_channels, :, :]
+                )
+                for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
+                    state_dict_p[prefix + f'shortcut.1.{bn_k}'].copy_(
+                        state_dict_s[prefix + f'shortcut.1.{bn_k}'][kept_indices[block_idx]]
+                    )
 
-            state_dict_p[prefix + 'bn1.running_mean'] = state_dict_s[prefix + 'bn1.running_mean'] [internal_indices]
-
-            state_dict_p[prefix + 'bn1.running_var'] = state_dict_s[prefix + 'bn1.running_var'] [internal_indices]
-
-            # conv2
-            state_dict_p[prefix + 'conv2.weight'] = state_dict_s[prefix + 'conv2.weight'] [kept_indices[block_idx], internal_indices, :, :]
-
-            # bn2
-            state_dict_p[prefix + 'bn2.weight'] = state_dict_s[prefix + 'bn2.weight'] [kept_indices[block_idx]]
-
-            state_dict_p[prefix + 'bn2.bias'] = state_dict_s[prefix + 'bn2.bias'] [kept_indices[block_idx]]
-
-            state_dict_p[prefix + 'bn2.running_mean'] = state_dict_s[prefix + 'bn2.running_mean'] [kept_indices[block_idx]]
-
-            state_dict_p[prefix + 'bn2.running_var'] = state_dict_s[prefix + 'bn2.running_var'] [kept_indices[block_idx]]
-
-            # shortcut if present in pruned
-            if f'{prefix}shortcut.0.weight' in state_dict_p:
-                if f'{prefix}shortcut.0.weight' in state_dict_s:
-                    # if original has shortcut, select
-                    state_dict_p[prefix + 'shortcut.0.weight'] = state_dict_s[prefix + 'shortcut.0.weight'] [kept_indices[block_idx], in_indices, :, :]
-
-                    state_dict_p[prefix + 'shortcut.1.weight'] = state_dict_s[prefix + 'shortcut.1.weight'] [kept_indices[block_idx]]
-
-                    state_dict_p[prefix + 'shortcut.1.bias'] = state_dict_s[prefix + 'shortcut.1.bias'] [kept_indices[block_idx]]
-
-                    state_dict_p[prefix + 'shortcut.1.running_mean'] = state_dict_s[prefix + 'shortcut.1.running_mean'] [kept_indices[block_idx]]
-
-                    state_dict_p[prefix + 'shortcut.1.running_var'] = state_dict_s[prefix + 'shortcut.1.running_var'] [kept_indices[block_idx]]
-                else:
-                    # if not in original, set to identity projection
-                    weight = state_dict_p[prefix + 'shortcut.0.weight']
-                    weight.data.zero_()
-                    min_dim = min(weight.shape[0], weight.shape[1])
-                    for k in range(min_dim):
-                        weight[k, k, 0, 0] = 1.0
-
-                    state_dict_p[prefix + 'shortcut.1.weight'] = torch.ones(weight.shape[0]).to(device)
-
-                    state_dict_p[prefix + 'shortcut.1.bias'] = torch.zeros(weight.shape[0]).to(device)
-
-                    state_dict_p[prefix + 'shortcut.1.running_mean'] = torch.zeros(weight.shape[0]).to(device)
-
-                    state_dict_p[prefix + 'shortcut.1.running_var'] = torch.ones(weight.shape[0]).to(device)
-
-            # update for next
-            in_indices = kept_indices[block_idx]
-
+            # آپدیت برای بلاک بعدی
+            in_channels = out_channels
             block_idx += 1
 
-    # linear
-    state_dict_p['linear.weight'] = state_dict_s['linear.weight'][:, kept_indices[-1]]
-
-    state_dict_p['linear.bias'] = state_dict_s['linear.bias']
+    # لایه آخر
+    state_dict_p['linear.weight'].copy_(state_dict_s['linear.weight'][:, :in_channels])
+    state_dict_p['linear.bias'].copy_(state_dict_s['linear.bias'])
 
     pruned_model.load_state_dict(state_dict_p)
-
     return pruned_model
 
 

@@ -75,40 +75,48 @@ class BasicBlock_KD(nn.Module):
 
 class ResNet_KD(nn.Module):
     """ResNet with Knowledge Distillation support"""
-    def __init__(self, block, num_blocks, in_cfg=None, out_cfg=None, num_classes=10, 
+    def __init__(self, block, num_blocks, num_classes=10, 
                  option='B', finding_masks=False):
         super(ResNet_KD, self).__init__()
-        self.in_planes = 16
         self.option = option
         self.finding_masks = finding_masks
         self.mask_hooks = []
-        
-        # Default configs if not provided
-        if in_cfg is None:
-            in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-        if out_cfg is None:
-            out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-            
-        self.in_cfg = in_cfg
-        self.out_cfg = out_cfg
 
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
-        self.linear = nn.Linear(64, num_classes)
+        # Default configs
+        self.out_cfg = [16,16,16,16,32,32,32,64,64,64,64]
+        self.strides = [1,1,1,2,1,1,2,1,1]
+
+        self.conv1 = nn.Conv2d(3, self.out_cfg[0], kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(self.out_cfg[0])
+
+        layer1 = []
+        current_in = self.out_cfg[0]
+        for i in range(num_blocks[0]):
+            planes = self.out_cfg[i+1]
+            stride = self.strides[i]
+            layer1.append(block(current_in, planes, stride, option, finding_masks))
+            current_in = planes
+        self.layer1 = nn.Sequential(*layer1)
+
+        layer2 = []
+        for i in range(num_blocks[1]):
+            planes = self.out_cfg[num_blocks[0] + i +1]
+            stride = self.strides[num_blocks[0] + i]
+            layer2.append(block(current_in, planes, stride, option, finding_masks))
+            current_in = planes
+        self.layer2 = nn.Sequential(*layer2)
+
+        layer3 = []
+        for i in range(num_blocks[1]):
+            planes = self.out_cfg[num_blocks[0] + num_blocks[1] + i +1]
+            stride = self.strides[num_blocks[0] + num_blocks[1] + i]
+            layer3.append(block(current_in, planes, stride, option, finding_masks))
+            current_in = planes
+        self.layer3 = nn.Sequential(*layer3)
+
+        self.linear = nn.Linear(self.out_cfg[-1], num_classes)
 
         self.apply(_weights_init)
-
-    def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1]*(num_blocks-1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride, 
-                              option=self.option, finding_masks=self.finding_masks))
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
@@ -146,39 +154,24 @@ class ResNet_KD(nn.Module):
         self.mask_hooks = []
 
 
-def resnet20(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    """
-    ResNet-20 for Knowledge Distillation
-    
-    Args:
-        num_classes: number of output classes
-        option: 'A' or 'B' for shortcut connection
-        finding_masks: whether to use dynamic masking
-        in_cfg: input channel configuration
-        out_cfg: output channel configuration
-    """
-    return ResNet_KD(BasicBlock_KD, [3, 3, 3], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet20(num_classes=10, option='B', finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [3, 3, 3], num_classes=num_classes, option=option, finding_masks=finding_masks)
 
 
-def resnet32(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [5, 5, 5], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet32(num_classes=10, option='B', finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [5, 5, 5], num_classes=num_classes, option=option, finding_masks=finding_masks)
 
 
-def resnet44(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [7, 7, 7], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet44(num_classes=10, option='B', finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [7, 7, 7], num_classes=num_classes, option=option, finding_masks=finding_masks)
 
 
-def resnet56(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [9, 9, 9], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet56(num_classes=10, option='B', finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [9, 9, 9], num_classes=num_classes, option=option, finding_masks=finding_masks)
 
 
-def resnet110(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [18, 18, 18], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet110(num_classes=10, option='B', finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [18, 18, 18], num_classes=num_classes, option=option, finding_masks=finding_masks)
 
 
 if __name__ == "__main__":
@@ -188,10 +181,7 @@ if __name__ == "__main__":
     print(f"  Parameters: {sum(p.numel() for p in model1.parameters()) / 1e6:.2f}M")
     
     # Test with masking
-    in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-    out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-    model2 = resnet20(num_classes=10, option='B', finding_masks=True, 
-                      in_cfg=in_cfg, out_cfg=out_cfg)
+    model2 = resnet20(num_classes=10, option='B', finding_masks=True)
     print("\nResNet-20 with masking:")
     print(f"  Parameters: {sum(p.numel() for p in model2.parameters()) / 1e6:.2f}M")
     

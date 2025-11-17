@@ -156,7 +156,7 @@ def main_worker(args):
     print("=" * 80)
    
     if args.arch_s == 'cvgg11_bn':
-        model_s = cvgg11_bn(num_classes=args.num_classes, batch_norm=True)  # finding_masks حذف شد (هرس ساختاری جایگزین)
+        model_s = cvgg11_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
         in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
@@ -177,9 +177,9 @@ def main_worker(args):
     elif args.arch == 'cvgg19_bn':
         model = cvgg19_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch == 'resnet56':
-        model = resnet56(num_classes=args.num_classes)  # option و finding_masks حذف شد
+        model = resnet56(num_classes=args.num_classes)
     elif args.arch == 'resnet110':
-        model = resnet110(num_classes=args.num_classes)  # option و finding_masks حذف شد
+        model = resnet110(num_classes=args.num_classes)
     else:
         raise ValueError(f"Unsupported teacher architecture: {args.arch}")
    
@@ -252,9 +252,9 @@ def main_worker(args):
         print(f"✓ Using CIFAR-10 dataset ({args.num_classes} classes)")
     elif args.set == 'cifar100':
         data = CIFAR100()
-        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes)")
+        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes}")
     else:
-        raise ValueValueError(f"Unknown dataset: {args.set}")
+        raise ValueError(f"Unknown dataset: {args.set}")
     # ========================================================================================
     # Step 7: Validate Teacher Accuracy
     # ========================================================================================
@@ -360,14 +360,9 @@ def main_worker(args):
                 mask_list = []
                 layer_num = []
                
-                # NOTE: چون هرس ساختاری داریم، ماسک‌ها دیگه وجود ندارن — اگر نیاز به ماسک داری، کد قدیمی رو نگه دار
-                # اما برای سازگاری، این بخش رو کامنت کردم. اگر ماسک لازم داری، بگو اضافه کنم.
-                # model_s.hook_masks()
-                # ...
-               
-                # Log results
+                # Log results (بدون ماسک داینامیک، چون هرس ساختاری داریم)
                 logger.info(f"New best at epoch {epoch+1}: Accuracy = {acc1:.2f}%")
-                logger.info(f"Active neurons per layer: {layer_num}")  # اگر ماسک نداری، این خالی می‌مونه
+                logger.info(f"Active neurons per layer: {layer_num}")  # اگر نیاز به محاسبه neuronها داری، بگو اضافه کنم
                 
                 print(f"\n{'*' * 80}")
                 print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")

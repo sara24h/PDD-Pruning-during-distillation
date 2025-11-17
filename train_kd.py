@@ -222,7 +222,7 @@ def main_worker(args):
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(finding_masks=True, num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
-        model_s = resnet20(finding_masks=True, num_classes=args.num_classes, option='B')
+        model_s = resnet20(finding_masks=True, num_classes=args.num_classes)
     else:
         raise ValueError(f"Unsupported student architecture: {args.arch_s}")
     
@@ -240,7 +240,7 @@ def main_worker(args):
     elif args.arch == 'cvgg19_bn':
         model = cvgg19_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch == 'resnet56':
-        model = resnet56(num_classes=args.num_classes, option='B', finding_masks=False)
+        model = resnet56(num_classes=args.num_classes, finding_masks=False)
     elif args.arch == 'resnet110':
         model = resnet110(num_classes=args.num_classes, option='B', finding_masks=False)
     else:
@@ -564,6 +564,7 @@ if __name__ == "__main__":
     #   --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 \
     #   --lr_decay_step 20,40 --num_classes 10 --pretrained
     main()
+
 
 
 

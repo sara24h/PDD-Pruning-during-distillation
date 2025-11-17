@@ -155,9 +155,18 @@ def main_worker(args):
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
-        in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-        out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-        model_s = resnet20(in_cfg=in_cfg, out_cfg=out_cfg, num_classes=10)
+        # FIX: ResNet20 has 9 blocks + 1 initial conv + 1 fc = 11 layers total
+        # Format: [initial_conv, block1_1, block1_2, block1_3, 
+        #          block2_1, block2_2, block2_3, 
+        #          block3_1, block3_2, block3_3, fc]
+        in_cfg = [3, 16, 16, 16, 16, 32, 32, 32, 64, 64, 64]  # 11 elements
+        out_cfg = [16, 16, 16, 16, 32, 32, 32, 64, 64, 64, 10]  # 11 elements (last=num_classes)
+        
+        print(f"✓ Using configuration:")
+        print(f"  in_cfg:  {in_cfg} (length={len(in_cfg)})")
+        print(f"  out_cfg: {out_cfg} (length={len(out_cfg)})")
+        
+        model_s = resnet20(in_cfg=in_cfg, out_cfg=out_cfg, num_classes=args.num_classes)
     else:
         raise ValueError(f"Unsupported student architecture: {args.arch_s}")
    
@@ -359,7 +368,7 @@ def main_worker(args):
                
                 # Log results (بدون ماسک داینامیک، چون هرس ساختاری داریم)
                 logger.info(f"New best at epoch {epoch+1}: Accuracy = {acc1:.2f}%")
-                logger.info(f"Active neurons per layer: {layer_num}")  # اگر نیاز به محاسبه neuronها داری، بگو اضافه کنم
+                logger.info(f"Active neurons per layer: {layer_num}")
                 
                 print(f"\n{'*' * 80}")
                 print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")
@@ -392,4 +401,3 @@ def main_worker(args):
 
 if __name__ == "__main__":
     main()
-

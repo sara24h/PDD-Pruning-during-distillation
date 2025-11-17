@@ -10,7 +10,7 @@ from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
 from model.VGG_cifar import cvgg16_bn, cvgg19_bn
-from resnet_kd import resnet20, resnet56
+from resnet_kd import resnet20, resnet56, resnet110
 from trainer.trainer import validate, train, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger, get_lr
 from vgg_kd import cvgg11_bn
@@ -121,63 +121,6 @@ def ApproxSign(mask):
     out = (out + 1) / 2  # Normalize to [0, 1]
     return out
 
-def copy_weights(model_s, pruned_model, kept_indices, args):
-    device = f'cuda:{args.gpu}'
-    state_dict_s = model_s.state_dict()
-    state_dict_p = pruned_model.state_dict()
-
-    # conv1 + bn1 (همیشه کامل کپی میشه)
-    for k in ['conv1.weight', 'bn1.weight', 'bn1.bias', 'bn1.running_mean', 'bn1.running_var']:
-        state_dict_p[k].copy_(state_dict_s[k])
-
-    block_idx = 0
-    in_channels = 16  # بعد از conv1 همیشه 16 هست
-
-    for layer_name in ['layer1', 'layer2', 'layer3']:
-        num_blocks = 3  # برای resnet20 همیشه 3 تا بلاک در هر لایه
-        for b in range(num_blocks):
-            prefix = f'{layer_name}.{b}.'
-
-            # conv1 + bn1 (ورودی از لایه قبلی)
-            state_dict_p[prefix + 'conv1.weight'].copy_(
-                state_dict_s[prefix + 'conv1.weight'][:, :in_channels, :, :]
-            )
-            for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
-                state_dict_p[prefix + f'bn1.{bn_k}'].copy_(
-                    state_dict_s[prefix + f'bn1.{bn_k}']
-                )
-
-            # conv2 + bn2 (اینجا پرون میشه)
-            out_channels = kept_indices[block_idx].shape[0]
-            state_dict_p[prefix + 'conv2.weight'].copy_(
-                state_dict_s[prefix + 'conv2.weight'][kept_indices[block_idx]][:, :in_channels, :, :]
-            )
-            for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
-                state_dict_p[prefix + f'bn2.{bn_k}'].copy_(
-                    state_dict_s[prefix + f'bn2.{bn_k}'][kept_indices[block_idx]]
-                )
-
-            # Shortcut — مهم‌ترین قسمت! (درست شده)
-            if prefix + 'shortcut.0.weight' in state_dict_p:
-                state_dict_p[prefix + 'shortcut.0.weight'].copy_(
-                    state_dict_s[prefix + 'shortcut.0.weight'][kept_indices[block_idx]][:, :in_channels, :, :]
-                )
-                for bn_k in ['weight', 'bias', 'running_mean', 'running_var']:
-                    state_dict_p[prefix + f'shortcut.1.{bn_k}'].copy_(
-                        state_dict_s[prefix + f'shortcut.1.{bn_k}'][kept_indices[block_idx]]
-                    )
-
-            # آپدیت برای بلاک بعدی
-            in_channels = out_channels
-            block_idx += 1
-
-    # لایه آخر
-    state_dict_p['linear.weight'].copy_(state_dict_s['linear.weight'][:, :in_channels])
-    state_dict_p['linear.bias'].copy_(state_dict_s['linear.bias'])
-
-    pruned_model.load_state_dict(state_dict_p)
-    return pruned_model
-
 
 def main():
     print(args)
@@ -193,7 +136,7 @@ def main_worker(args):
     """Main training loop for PDD (Pruning During Distillation)"""
     
     # Setup logging
-    now = datetime.datetime.now().strftime('%Y-%m-%d-%H-M-S')
+    now = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     if not os.path.isdir('pretrained_model/' + args.arch + '/' + args.set):
         os.makedirs('pretrained_model/' + args.arch + '/' + args.set, exist_ok=True)
     logger = get_logger('pretrained_model/' + args.arch + '/' + args.set + '/logger' + now + '.log')
@@ -222,7 +165,10 @@ def main_worker(args):
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(finding_masks=True, num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
-        model_s = resnet20(finding_masks=True, num_classes=args.num_classes)
+        in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
+        out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
+        model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, 
+                          num_classes=args.num_classes, option='B')
     else:
         raise ValueError(f"Unsupported student architecture: {args.arch_s}")
     
@@ -240,12 +186,12 @@ def main_worker(args):
     elif args.arch == 'cvgg19_bn':
         model = cvgg19_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch == 'resnet56':
-        model = resnet56(num_classes=args.num_classes, finding_masks=False)
+        model = resnet56(num_classes=args.num_classes, option='B', finding_masks=False)
     elif args.arch == 'resnet110':
         model = resnet110(num_classes=args.num_classes, option='B', finding_masks=False)
     else:
         raise ValueError(f"Unsupported teacher architecture: {args.arch}")
-
+    
     print(f"✓ Teacher model created: {args.arch}")
 
     # ========================================================================================
@@ -357,7 +303,7 @@ def main_worker(args):
         weight_decay=args.weight_decay
     )
     
-    # Paper specifies: decay at epochs 20 and 40 for distillation
+    # Paper specifies: decay at epochs 20 and 40
     lr_decay_step = list(map(int, args.lr_decay_step.split(',')))
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, 
@@ -493,78 +439,24 @@ def main_worker(args):
                 print(f"✓ Saved model to: {model_path}")
 
     # ========================================================================================
-    # Step 12: Pruning and Finetuning the Pruned Model
+    # Step 12: Training Complete
     # ========================================================================================
     print("\n" + "=" * 80)
-    print("Performing Automatic Pruning and Finetuning...")
-    print("=" * 80)
-
-    # Compute kept_indices from mask_list
-    kept_indices = [torch.where(msk == 1)[0].to('cuda:' + str(args.gpu)) for msk in mask_list]
-
-    # Compute pruned_out_cfg
-    pruned_out_cfg = [16] + layer_num + [layer_num[-1]]  # adjust if needed, but since out_cfg has 10, conv1 +9 + last = layer_num[-1]
-
-    # The original out_cfg is [16,16,16,32,32,32,64,64,64,64]
-
-    pruned_out_cfg = [16] + layer_num
-
-    # Create pruned model
-    pruned_model = resnet20(finding_masks=False, num_classes=args.num_classes, option='B')
-    pruned_model = set_gpu(args, pruned_model)
-
-    # Copy selected weights
-    pruned_model = copy_weights(model_s, pruned_model, kept_indices, args)
-
-    # Setup optimizer for finetune
-    optimizer_p = torch.optim.SGD(
-        pruned_model.parameters(), 
-        lr=args.lr, 
-        momentum=args.momentum, 
-        weight_decay=args.weight_decay
-    )
-
-    # Assume finetune for 150 epochs, decay at 60,90
-    finetune_epochs = 150
-    scheduler_p = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer_p, 
-        milestones=[60,90], 
-        gamma=0.1
-    )
-
-    # Finetune loop
-    best_acc1 = 0.0
-    for epoch in range(finetune_epochs):
-        train_acc1, train_acc5 = train(data.train_loader, pruned_model, criterion, optimizer_p, epoch, args)
-
-        acc1, acc5 = validate(data.val_loader, pruned_model, criterion, args)
-
-        scheduler_p.step()
-
-        is_best = acc1 > best_acc1
-        best_acc1 = max(acc1, best_acc1)
-
-        if is_best:
-            torch.save(pruned_model.state_dict(), f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}_pruned.pt')
-
-    print("\n" + "=" * 80)
-    print("🎊 PDD Training and Pruning Completed Successfully!")
-    print(f"Best Validation Accuracy after Finetuning: {best_acc1:.2f}%")
+    print("🎊 PDD Training Completed Successfully!")
+    print(f"Best Validation Accuracy: {best_acc1:.2f}%")
+    print(f"Best Training Accuracy: {best_train_acc1:.2f}%")
     print("=" * 80)
     
     logger.info("=" * 80)
-    logger.info("Training and Pruning Completed!")
-    logger.info(f"Best Validation Accuracy after Finetuning: {best_acc1:.2f}%")
+    logger.info("Training Completed!")
+    logger.info(f"Best Validation Accuracy: {best_acc1:.2f}%")
+    logger.info(f"Best Training Accuracy: {best_train_acc1:.2f}%")
     logger.info("=" * 80)
 
 
 if __name__ == "__main__":
     # Example usage:
     # python train_kd.py --gpu 0 --arch resnet56 --arch_s resnet20 --set cifar10 \
-    #   --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 \
+    #   --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 50 \
     #   --lr_decay_step 20,40 --num_classes 10 --pretrained
     main()
-
-
-
-

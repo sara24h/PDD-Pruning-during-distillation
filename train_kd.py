@@ -155,12 +155,11 @@ def main_worker(args):
     if args.arch_s == 'cvgg11_bn':
         model_s = cvgg11_bn(num_classes=args.num_classes, batch_norm=True)
     elif args.arch_s == 'resnet20':
-        # FIX: ResNet20 has 9 blocks + 1 initial conv + 1 fc = 11 layers total
-        # Format: [initial_conv, block1_1, block1_2, block1_3, 
-        #          block2_1, block2_2, block2_3, 
-        #          block3_1, block3_2, block3_3, fc]
-        in_cfg = [3, 16, 16, 16, 16, 32, 32, 32, 64, 64, 64]  # 11 elements
-        out_cfg = [16, 16, 16, 16, 32, 32, 32, 64, 64, 64, 10]  # 11 elements (last=num_classes)
+        # ResNet20: 1 conv1 + 9 blocks = 10 conv layers total
+        # in_cfg: [conv1, block1_1, block1_2, block1_3, block2_1, block2_2, block2_3, block3_1, block3_2, block3_3]
+        # out_cfg: [conv1, block1_1, block1_2, block1_3, block2_1, block2_2, block2_3, block3_1, block3_2, block3_3, fc]
+        in_cfg = [3, 16, 16, 16, 16, 32, 32, 32, 64, 64]  # 10 elements
+        out_cfg = [16, 16, 16, 16, 32, 32, 32, 64, 64, 64, args.num_classes]  # 11 elements
         
         print(f"✓ Using configuration:")
         print(f"  in_cfg:  {in_cfg} (length={len(in_cfg)})")

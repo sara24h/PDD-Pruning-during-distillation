@@ -6,6 +6,8 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 from torch import nn
+import argparse  # <<<< اضافه شد
+import datetime  # <<<< اضافه شد
 from data.Data import CIFAR10, CIFAR100
 from model.VGG_cifar import cvgg16_bn
 from resnet_kd import resnet20, resnet56, resnet110
@@ -13,7 +15,32 @@ from trainer.trainer import validate, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger
 from vgg_kd import cvgg11_bn
 import torch.nn.functional as F
-import numpy as np
+
+
+# ================================================================================
+# بخش اضافه شده برای تعریف آرگومان‌های خط فرمان
+# ================================================================================
+parser = argparse.ArgumentParser(description='PDD: Pruning During Knowledge Distillation')
+parser.add_argument("--gpu", default=0, type=int, help="Which GPU to use")
+parser.add_argument("--arch", default='resnet56', type=str, help="Teacher architecture")
+parser.add_argument("--arch_s", default='resnet20', type=str, help="Student architecture")
+parser.add_argument("--set", default='cifar10', type=str, help="Dataset name (cifar10, cifar100)")
+parser.add_argument("--lr", default=0.01, type=float, help="Learning rate")
+parser.add_argument("--batch_size", default=128, type=int, help="Batch size")
+parser.add_argument("--weight_decay", default=5e-4, type=float, help="Weight decay")
+parser.add_argument("--epochs", default=50, type=int, help="Number of total epochs to run")
+parser.add_argument("--lr_decay_step", default='20,40', type=str, help="Epochs to decay learning rate")
+parser.add_argument("--num_classes", default=10, type=int, help="Number of classes in the dataset")
+parser.add_argument("--pretrained", action="store_true", help="Use pre-trained teacher model")
+parser.add_argument("--start_epoch", default=0, type=int, help="Manual epoch number (useful on restarts)")
+parser.add_argument("--save_every", default=0, type=int, help="Save checkpoint every N epochs (0 to disable)")
+parser.add_argument("--random_seed", default=None, type=int, help="Seed for random number generators")
+parser.add_argument("--momentum", default=0.9, type=float, help="Momentum for SGD")
+parser.add_argument("--print_freq", default=100, type=int, help="Print frequency")
+
+# پارس کردن آرگومان‌ها
+args = parser.parse_args()
+# ================================================================================
 
 
 def load_teacher_checkpoint(args):
@@ -82,12 +109,21 @@ def load_teacher_checkpoint(args):
     
     elif args.arch == 'cvgg16_bn':
         if args.pretrained:
+            # این مسیر را با مسیر فایل واقعی جایگزین کنید
             if args.set == 'cifar10':
-                ckpt = torch.load('pretrained_model/cvgg16_bn/cifar10/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
+                ckpt_path = 'pretrained_model/cvgg16_bn/cifar10/scores.pt'
+                if os.path.exists(ckpt_path):
+                    ckpt = torch.load(ckpt_path, map_location='cuda:%d' % args.gpu)
+                else:
+                    print(f"⚠️ Teacher checkpoint not found at {ckpt_path}. Please download it manually.")
+                    ckpt = None
             elif args.set == 'cifar100':
-                ckpt = torch.load('pretrained_model/cvgg16_bn/cifar100/scores.pt', 
-                                map_location='cuda:%d' % args.gpu)
+                ckpt_path = 'pretrained_model/cvgg16_bn/cifar100/scores.pt'
+                if os.path.exists(ckpt_path):
+                    ckpt = torch.load(ckpt_path, map_location='cuda:%d' % args.gpu)
+                else:
+                    print(f"⚠️ Teacher checkpoint not found at {ckpt_path}. Please download it manually.")
+                    ckpt = None
     
     return ckpt
 
@@ -109,117 +145,7 @@ def ApproxSign(mask):
     return out
 
 
-def extract_masks(model_s, args):
-    """Extract masks from the trained student model"""
-    # Hook masks to capture their values
-    model_s.hook_masks()
-    
-    # Forward pass to trigger hooks
-    dummy_input = torch.randn(1, 3, 32, 32).cuda(args.gpu)
-    with torch.no_grad():
-        _ = model_s(dummy_input)
-    
-    # Get captured masks
-    masks = model_s.get_masks()
-    
-    # Fallback: manual extraction if hooks failed
-    if len(masks) == 0:
-        print("⚠️ Warning: No masks captured via hooks. Extracting manually...")
-        for name, module in model_s.named_modules():
-            if hasattr(module, 'mask'):
-                masks[name] = module.mask
-    
-    # Apply ApproxSign to get binary masks
-    mask_list = []
-    layer_num = []
-    
-    for key in sorted(masks.keys()):  # Sort for consistency
-        mask_param = masks[key]
-        
-        # Handle both DynamicMask objects and direct tensors
-        if hasattr(mask_param, 'mask'):  # DynamicMask object
-            mask_tensor = mask_param.mask
-        else:  # Direct tensor
-            mask_tensor = mask_param
-        
-        # Convert continuous mask to binary {0, 1}
-        msk = ApproxSign(mask_tensor).squeeze()
-        total = torch.sum(msk)
-        layer_num.append(int(total.cpu().detach().numpy()))
-        mask_list.append(msk)
-    
-    # Remove hooks
-    model_s.remove_hooks()
-    
-    return mask_list, layer_num
-
-
-def create_pruned_model(model_s, mask_list, layer_num, args):
-    """Create a pruned model based on the extracted masks"""
-    if args.arch_s == 'cvgg11_bn':
-        # Calculate new channel configurations
-        in_cfg = [3]  # Input channels
-        out_cfg = layer_num  # Output channels for each layer
-        
-        print(f"Creating pruned VGG11 with {len(out_cfg)} layers")
-        print(f"Output channels config: {out_cfg}")
-        
-        # Create pruned model
-        pruned_model = cvgg11_bn(
-            finding_masks=False,  # No masks needed for final model
-            num_classes=args.num_classes,
-            batch_norm=True
-        ).cuda()
-        
-        # Copy weights from original model (only for active channels)
-        pruned_state_dict = pruned_model.state_dict()
-        original_state_dict = model_s.state_dict()
-        
-        # This is a simplified approach - in practice, you'd need to carefully map
-        # the weights from the original model to the pruned model based on the masks
-        for name, param in pruned_state_dict.items():
-            if name in original_state_dict:
-                pruned_state_dict[name].copy_(original_state_dict[name])
-        
-        pruned_model.load_state_dict(pruned_state_dict)
-        
-    elif args.arch_s == 'resnet20':
-        # Calculate new channel configurations
-        in_cfg = [3]  # Input channels
-        out_cfg = layer_num  # Output channels for each layer
-        
-        print(f"Creating pruned ResNet20 with {len(out_cfg)} layers")
-        print(f"Input channels config: {in_cfg}")
-        print(f"Output channels config: {out_cfg}")
-        
-        # Create pruned model
-        pruned_model = resnet20(
-            finding_masks=False,  # No masks needed for final model
-            in_cfg=in_cfg,
-            out_cfg=out_cfg,
-            num_classes=args.num_classes,
-            option='B'
-        ).cuda()
-        
-        # Copy weights from original model (only for active channels)
-        pruned_state_dict = pruned_model.state_dict()
-        original_state_dict = model_s.state_dict()
-        
-        # This is a simplified approach - in practice, you'd need to carefully map
-        # the weights from the original model to the pruned model based on the masks
-        for name, param in pruned_state_dict.items():
-            if name in original_state_dict:
-                pruned_state_dict[name].copy_(original_state_dict[name])
-        
-        pruned_model.load_state_dict(pruned_state_dict)
-    
-    else:
-        raise ValueError(f"Unsupported student architecture: {args.arch_s}")
-    
-    return pruned_model
-
-
-def main():
+def main(args):  # <<<< اصلاح شد: args به عنوان ورودی گرفته می‌شود
     print(args)
     sys.stdout = Logger('print_process.log', sys.stdout)
 
@@ -449,137 +375,82 @@ def main_worker(args):
         # ========================================================================================
         # Step 11: Save Best Model and Extract Masks
         # ========================================================================================
-        if is_best or epoch == args.epochs - 1:
-            # Extract masks from the best model
-            mask_list, layer_num = extract_masks(model_s, args)
-            
-            # Log results
-            logger.info(f"New best at epoch {epoch+1}: Accuracy = {acc1:.2f}%")
-            logger.info(f"Active neurons per layer: {layer_num}")
-            
-            print(f"\n{'*' * 80}")
-            print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")
-            print(f"   Active neurons per layer: {layer_num}")
-            print(f"{'*' * 80}\n")
+        save = ((epoch % args.save_every) == 0) and args.save_every > 0
+        if is_best or save or epoch == args.epochs - 1:
+            if is_best:
+                mask_list = []
+                layer_num = []
+                
+                # Hook masks to capture their values
+                model_s.hook_masks()
+                
+                # Forward pass to trigger hooks (CRITICAL!)
+                dummy_input = torch.randn(1, 3, 32, 32).cuda(args.gpu)
+                with torch.no_grad():  # No gradients needed for mask extraction
+                    _ = model_s(dummy_input)
+                
+                # Get captured masks
+                masks = model_s.get_masks()
+                
+                # Fallback: manual extraction if hooks failed
+                if len(masks) == 0:
+                    print("⚠️ Warning: No masks captured via hooks. Extracting manually...")
+                    for name, module in model_s.named_modules():
+                        if hasattr(module, 'mask'):
+                            masks[name] = module.mask
+                
+                # Apply ApproxSign to get binary masks (Equation 2 in paper)
+                for key in sorted(masks.keys()):  # Sort for consistency
+                    mask_param = masks[key]
+                    
+                    # Handle both DynamicMask objects and direct tensors
+                    if hasattr(mask_param, 'mask'):  # DynamicMask object
+                        mask_tensor = mask_param.mask
+                    else:  # Direct tensor
+                        mask_tensor = mask_param
+                    
+                    # Convert continuous mask to binary {0, 1}
+                    msk = ApproxSign(mask_tensor).squeeze()
+                    total = torch.sum(msk)
+                    layer_num.append(int(total.cpu().detach().numpy()))
+                    mask_list.append(msk)
 
-            # Save mask and model state
-            mask_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt'
-            model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
-            
-            to = {'layer_num': layer_num, 'mask': mask_list}
-            torch.save(to, mask_path)
-            torch.save(model_s.state_dict(), model_path)
-            
-            print(f"✓ Saved mask to: {mask_path}")
-            print(f"✓ Saved model to: {model_path}")
+                # Remove hooks
+                model_s.remove_hooks()
+                
+                # Log results
+                logger.info(f"New best at epoch {epoch+1}: Accuracy = {acc1:.2f}%")
+                logger.info(f"Active neurons per layer: {layer_num}")
+                
+                print(f"\n{'*' * 80}")
+                print(f"🎉 New Best Model! Accuracy: {acc1:.2f}%")
+                print(f"   Active neurons per layer: {layer_num}")
+                print(f"{'*' * 80}\n")
 
-    # ========================================================================================
-    # Step 12: Create Pruned Model
-    # ========================================================================================
-    print("\n" + "=" * 80)
-    print("Creating Pruned Model...")
-    print("=" * 80)
-    
-    # Load the best model
-    model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
-    model_s.load_state_dict(torch.load(model_path))
-    
-    # Extract masks from the best model
-    mask_list, layer_num = extract_masks(model_s, args)
-    
-    # Create pruned model based on masks
-    pruned_model = create_pruned_model(model_s, mask_list, layer_num, args)
-    
-    # Save the pruned model
-    pruned_model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned.pt'
-    torch.save(pruned_model.state_dict(), pruned_model_path)
-    
-    print(f"✓ Pruned model saved to: {pruned_model_path}")
-    
-    # Validate the pruned model
-    pruned_acc1, pruned_acc5 = validate(data.val_loader, pruned_model, criterion, args)
-    print(f"Pruned Model Accuracy - Top-1: {pruned_acc1:.2f}%, Top-5: {pruned_acc5:.2f}%")
-    
-    # ========================================================================================
-    # Step 13: Fine-tune the Pruned Model
-    # ========================================================================================
-    print("\n" + "=" * 80)
-    print("Fine-tuning Pruned Model...")
-    print("=" * 80)
-    
-    # Setup optimizer for fine-tuning
-    finetune_optimizer = torch.optim.SGD(
-        pruned_model.parameters(), 
-        lr=args.lr * 0.1,  # Lower learning rate for fine-tuning
-        momentum=args.momentum, 
-        weight_decay=args.weight_decay
-    )
-    
-    finetune_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        finetune_optimizer, 
-        milestones=[10, 20],  # Fewer milestones for fine-tuning
-        gamma=0.1
-    )
-    
-    # Fine-tune for fewer epochs
-    finetune_epochs = 30
-    best_finetune_acc1 = 0.0
-    
-    for epoch in range(finetune_epochs):
-        print("\n" + "=" * 80)
-        print(f"Fine-tune Epoch [{epoch+1}/{finetune_epochs}] - LR: {finetune_optimizer.param_groups[0]['lr']:.6f}")
-        print("=" * 80)
-        
-        # Train the pruned model (standard training, not KD)
-        train_acc1, train_acc5 = train(
-            data.train_loader, 
-            pruned_model, 
-            criterion, 
-            finetune_optimizer, 
-            epoch, 
-            args
-        )
-        
-        # Validate the pruned model
-        acc1, acc5 = validate(data.val_loader, pruned_model, criterion, args)
-        
-        # Update learning rate
-        finetune_scheduler.step()
-        
-        # Update best metrics
-        is_best = acc1 > best_finetune_acc1
-        best_finetune_acc1 = max(acc1, best_finetune_acc1)
-        
-        # Print epoch summary
-        print(f"\nFine-tune Epoch {epoch+1} Summary:")
-        print(f"  Train - Top-1: {train_acc1:.2f}%, Top-5: {train_acc5:.2f}%")
-        print(f"  Val   - Top-1: {acc1:.2f}%, Top-5: {acc5:.2f}%")
-        print(f"  Best  - Top-1: {best_finetune_acc1:.2f}%")
-        
-        # Save the best fine-tuned model
-        if is_best:
-            finetuned_model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned_finetuned.pt'
-            torch.save(pruned_model.state_dict(), finetuned_model_path)
-            print(f"✓ Best fine-tuned model saved to: {finetuned_model_path}")
+                # Save mask and model state
+                mask_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt'
+                model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
+                
+                to = {'layer_num': layer_num, 'mask': mask_list}
+                torch.save(to, mask_path)
+                torch.save(model_s.state_dict(), model_path)
+                
+                print(f"✓ Saved mask to: {mask_path}")
+                print(f"✓ Saved model to: {model_path}")
 
     # ========================================================================================
-    # Step 14: Training Complete
+    # Step 12: Training Complete
     # ========================================================================================
     print("\n" + "=" * 80)
-    print("🎊 PDD Training and Pruning Completed Successfully!")
-    print(f"Original Student Accuracy: {best_acc1:.2f}%")
-    print(f"Pruned Model Accuracy: {pruned_acc1:.2f}%")
-    print(f"Fine-tuned Pruned Model Accuracy: {best_finetune_acc1:.2f}%")
+    print("🎊 PDD Training Completed Successfully!")
+    print(f"Best Validation Accuracy: {best_acc1:.2f}%")
     print("=" * 80)
     
     logger.info("=" * 80)
-    logger.info("Training and Pruning Completed!")
-    logger.info(f"Original Student Accuracy: {best_acc1:.2f}%")
-    logger.info(f"Pruned Model Accuracy: {pruned_acc1:.2f}%")
-    logger.info(f"Fine-tuned Pruned Model Accuracy: {best_finetune_acc1:.2f}%")
+    logger.info("Training Completed!")
+    logger.info(f"Best Validation Accuracy: {best_acc1:.2f}%")
     logger.info("=" * 80)
 
 
 if __name__ == "__main__":
- 
-    main()
+    main(args)  # <<<< اصلاح شد: args به تابع main پاس داده می‌شود

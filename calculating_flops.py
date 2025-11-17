@@ -189,8 +189,8 @@ print("Creating Pruned Model...")
 print("="*80)
 
 # Try to load fine-tuned pruned model first
-finetuned_model_path = f'/kaggle/working/pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned_finetuned.pt'
-pruned_model_path = f'/kaggle/working/pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned.pt'
+finetuned_model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned_finetuned.pt'
+pruned_model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_pruned.pt'
 
 if os.path.exists(finetuned_model_path):
     print(f"Loading fine-tuned pruned model from: {finetuned_model_path}")
@@ -283,4 +283,3 @@ if os.path.exists(original_model_path):
     print(f'Pruned FLOPs: {flops:,.0f} ({flops/1e6:.2f}M)')
     print(f'FLOPs Reduction: {flops_ratio:.2f}%')
     print("="*80)
-

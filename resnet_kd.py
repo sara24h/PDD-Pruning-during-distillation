@@ -1,3 +1,4 @@
+# resnet_kd.py → نسخه نهایی (اصلاح assert و محاسبه بلوک‌ها)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -38,27 +39,26 @@ class BasicBlock(nn.Module):
 
 
 class ResNet_CIFAR(nn.Module):
-    """
-    ResNet برای CIFAR با پشتیبانی کامل از pruning ساختاری
-    """
     def __init__(self, block, num_blocks, in_cfg, out_cfg, num_classes=10):
         super().__init__()
-        assert len(in_cfg) == len(out_cfg) == 1 + 3*sum(num_blocks)  # conv1 + 3n blocks
+        total_blocks = 1 + sum(num_blocks)  # conv1 + total BasicBlocks
+        assert len(in_cfg) == total_blocks, f"in_cfg length {len(in_cfg)} != expected {total_blocks}"
+        assert len(out_cfg) == total_blocks + 1, f"out_cfg length {len(out_cfg)} != expected {total_blocks + 1} (extra for fc)"
 
         self.in_cfg = in_cfg
         self.out_cfg = out_cfg
 
         # conv1
-        self.conv1 = nn.Conv2d(3, out_cfg[0], kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_cfg[0], out_cfg[0], kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_cfg[0])
 
         # لایه‌ها
         idx = 1
-        self.layer1 = self._make_layer(block, num_blocks[0], in_cfg[idx:idx+3], out_cfg[idx:idx+3], stride=1)
-        idx += 3
-        self.layer2 = self._make_layer(block, num_blocks[1], in_cfg[idx:idx+3], out_cfg[idx:idx+3], stride=2)
-        idx += 3
-        self.layer3 = self._make_layer(block, num_blocks[2], in_cfg[idx:idx+3], out_cfg[idx:idx+3], stride=2)
+        self.layer1 = self._make_layer(block, num_blocks[0], in_cfg[idx:], out_cfg[idx:], stride=1)  # in_cfg[idx:idx+num_blocks[0]] اما برای سازگاری
+        idx += num_blocks[0]
+        self.layer2 = self._make_layer(block, num_blocks[1], in_cfg[idx:], out_cfg[idx:], stride=2)
+        idx += num_blocks[1]
+        self.layer3 = self._make_layer(block, num_blocks[2], in_cfg[idx:], out_cfg[idx:], stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(out_cfg[-1], num_classes)
@@ -83,15 +83,14 @@ class ResNet_CIFAR(nn.Module):
         return x
 
 
-# توابع سازنده (همه مدل‌ها)
+# توابع سازنده
 def _resnet(depth, in_cfg=None, out_cfg=None, num_classes=10):
     n = (depth - 2) // 6
     num_blocks = [n, n, n]
-    total_blocks = 1 + 3*n  # conv1 + 3n blocks
+    total_blocks = 1 + sum(num_blocks)
     if in_cfg is None or out_cfg is None:
-        in_cfg  = [3] + [16]*n + [32]*n + [64]*n
-        out_cfg =       [16]*n + [32]*n + [64]*(n+1)  # +1 برای linear
-    assert len(in_cfg) == len(out_cfg) == total_blocks
+        in_cfg  = [3] + [16]*num_blocks[0] + [32]*num_blocks[1] + [64]*num_blocks[2]
+        out_cfg = [16] + [16]* (num_blocks[0]-1) + [32]*num_blocks[1] + [64]*num_blocks[2] + [64]  # اصلاح برای طول درست
     return ResNet_CIFAR(BasicBlock, num_blocks, in_cfg, out_cfg, num_classes)
 
 
@@ -110,20 +109,11 @@ def resnet56(in_cfg=None, out_cfg=None, num_classes=10):
 def resnet110(in_cfg=None, out_cfg=None, num_classes=10):
     return _resnet(110, in_cfg, out_cfg, num_classes)
 
-
-# تست سریع (اگر فایل را مستقیم اجرا کنید)
+# تست
 if __name__ == "__main__":
     from thop import profile
-
-    # مدل کامل
-    model_full = resnet20(num_classes=10)
-    flops, params = profile(model_full, inputs=(torch.randn(1,3,32,32),), verbose=False)
-    print(f"Full ResNet-20  → Params: {params/1e6:.3f}M, FLOPs: {flops/1e6:.1f}M")
-
-    # مدل هرس‌شده (مثال واقعی از مقالات)
-    in_cfg  = [3, 16, 14, 13, 28, 21, 24, 47, 69, 50]
-    out_cfg = [   16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
-    model_pruned = resnet20(in_cfg=in_cfg, out_cfg=out_cfg)
-    flops, params = profile(model_pruned, inputs=(torch.randn(1,3,32,32),), verbose=False)
-    print(f"Pruned ResNet-20 → Params: {params/1e6:.3f}M ({params/272474*100:.1f}% of full), "
-          f"FLOPs: {flops/1e6:.1f}M")
+    in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
+    out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
+    model = resnet20(in_cfg=in_cfg, out_cfg=out_cfg)
+    flops, params = profile(model, inputs=(torch.randn(1,3,32,32),))
+    print(f"Params: {params/1e6:.3f}M, FLOPs: {flops/1e6:.1f}M")

@@ -1,15 +1,12 @@
-"""
-ResNet for CIFAR-10 with Knowledge Distillation support and dynamic masking
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 
-__all__ = ['resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110']
+__all__ = ['resnet20_auto', 'resnet56_auto']
+
 
 def _weights_init(m):
-    classname = m.__class__.__name__
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         init.kaiming_normal_(m.weight)
 
@@ -24,48 +21,81 @@ class LambdaLayer(nn.Module):
 
 
 class DynamicMask(nn.Module):
-    """Dynamic mask layer for pruning during distillation"""
+    """
+    ماسک دینامیک که خودش تصمیم می‌گیرد کدام کانال‌ها حذف شوند
+    """
     def __init__(self, channels):
         super(DynamicMask, self).__init__()
+        # مقداردهی اولیه با عدد مثبت (همه کانال‌ها فعال)
         self.mask = nn.Parameter(torch.ones(1, channels, 1, 1))
+        self.channels = channels
         
     def forward(self, x):
+        """
+        در training: از ماسک کامل استفاده می‌کند
+        در inference: می‌توان با threshold کانال‌ها را حذف کرد
+        """
         return x * self.mask
+    
+    def get_active_channels(self, threshold=0.0):
+        """
+        تعداد کانال‌های فعال را محاسبه می‌کند
+        threshold: آستانه برای تعیین کانال فعال (پیش‌فرض: 0)
+        """
+        with torch.no_grad():
+            binary_mask = (self.mask.squeeze() > threshold).float()
+            return int(binary_mask.sum().item())
+    
+    def get_binary_mask(self, threshold=0.0):
+        """
+        ماسک باینری را برمی‌گرداند (0 یا 1)
+        """
+        with torch.no_grad():
+            return (self.mask.squeeze() > threshold).float()
 
 
-class BasicBlock_KD(nn.Module):
-    """BasicBlock with optional dynamic masking"""
+class BasicBlock_AutoPrune(nn.Module):
+    """
+    BasicBlock با قابلیت هرس خودکار
+    """
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, option='B', finding_masks=False):
-        super(BasicBlock_KD, self).__init__()
-        self.finding_masks = finding_masks
+    def __init__(self, in_planes, planes, stride=1, option='B', use_pruning=False):
+        super(BasicBlock_AutoPrune, self).__init__()
+        self.use_pruning = use_pruning
         
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, 
+                               stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, 
+                               stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(planes)
 
-        # Add dynamic mask if finding_masks is True
-        if self.finding_masks:
+        # ماسک دینامیک برای هرس
+        if self.use_pruning:
             self.mask = DynamicMask(planes)
         
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != planes:
             if option == 'A':
-                self.shortcut = LambdaLayer(lambda x: F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, planes//4, planes//4), "constant", 0))
+                self.shortcut = LambdaLayer(
+                    lambda x: F.pad(x[:, :, ::2, ::2], 
+                                  (0, 0, 0, 0, planes//4, planes//4), 
+                                  "constant", 0)
+                )
             elif option == 'B':
                 self.shortcut = nn.Sequential(
-                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                     nn.BatchNorm2d(self.expansion * planes)
+                    nn.Conv2d(in_planes, self.expansion * planes, 
+                            kernel_size=1, stride=stride, bias=False),
+                    nn.BatchNorm2d(self.expansion * planes)
                 )
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         
-        # Apply mask if finding_masks is enabled
-        if self.finding_masks:
+        # اعمال ماسک در صورت فعال بودن pruning
+        if self.use_pruning:
             out = self.mask(out)
             
         out += self.shortcut(x)
@@ -73,32 +103,29 @@ class BasicBlock_KD(nn.Module):
         return out
 
 
-class ResNet_KD(nn.Module):
-    """ResNet with Knowledge Distillation support"""
-    def __init__(self, block, num_blocks, in_cfg=None, out_cfg=None, num_classes=10, 
-                 option='B', finding_masks=False):
-        super(ResNet_KD, self).__init__()
+class ResNet_AutoPrune(nn.Module):
+    """
+    ResNet با قابلیت هرس خودکار کانال‌ها
+    نیازی به تعیین دستی in_cfg و out_cfg ندارد
+    """
+    def __init__(self, block, num_blocks, num_classes=10, 
+                 option='B', use_pruning=False):
+        super(ResNet_AutoPrune, self).__init__()
         self.in_planes = 16
         self.option = option
-        self.finding_masks = finding_masks
+        self.use_pruning = use_pruning
         self.mask_hooks = []
         
-        # Default configs if not provided
-        if in_cfg is None:
-            in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-        if out_cfg is None:
-            out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-            
-        self.in_cfg = in_cfg
-        self.out_cfg = out_cfg
-
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, 
+                              padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
+        
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2)
+        
         self.linear = nn.Linear(64, num_classes)
-
+        
         self.apply(_weights_init)
 
     def _make_layer(self, block, planes, num_blocks, stride):
@@ -106,7 +133,8 @@ class ResNet_KD(nn.Module):
         layers = []
         for stride in strides:
             layers.append(block(self.in_planes, planes, stride, 
-                              option=self.option, finding_masks=self.finding_masks))
+                              option=self.option, 
+                              use_pruning=self.use_pruning))
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
@@ -120,91 +148,167 @@ class ResNet_KD(nn.Module):
         out = self.linear(out)
         return out
     
-    def hook_masks(self):
-        """Hook to capture mask values"""
-        self.masks_dict = {}
-        
-        def hook_fn(name):
-            def fn(module, input, output):
-                if hasattr(module, 'mask'):
-                    self.masks_dict[name] = module.mask
-            return fn
+    def get_pruning_stats(self, threshold=0.0):
+       
+        stats = {
+            'layer_names': [],
+            'total_channels': [],
+            'active_channels': [],
+            'pruned_channels': [],
+            'sparsity': []
+        }
         
         for name, module in self.named_modules():
             if isinstance(module, DynamicMask):
-                hook = module.register_forward_hook(hook_fn(name))
-                self.mask_hooks.append(hook)
+                total = module.channels
+                active = module.get_active_channels(threshold)
+                pruned = total - active
+                sparsity = (pruned / total) * 100
+                
+                stats['layer_names'].append(name)
+                stats['total_channels'].append(total)
+                stats['active_channels'].append(active)
+                stats['pruned_channels'].append(pruned)
+                stats['sparsity'].append(sparsity)
+        
+        return stats
     
-    def get_masks(self):
-        """Return captured masks"""
-        return self.masks_dict
+    def print_pruning_stats(self, threshold=0.0):
+        """
+        آمار هرس را چاپ می‌کند
+        """
+        stats = self.get_pruning_stats(threshold)
+        
+        print("\n" + "="*100)
+        print("Automatic Pruning Statistics (Threshold = {:.2f})".format(threshold))
+        print("="*100)
+        print(f"{'Layer Name':<40} {'Total':<10} {'Active':<10} {'Pruned':<10} {'Sparsity':<10}")
+        print("-"*100)
+        
+        total_all = 0
+        active_all = 0
+        
+        for i in range(len(stats['layer_names'])):
+            layer = stats['layer_names'][i]
+            total = stats['total_channels'][i]
+            active = stats['active_channels'][i]
+            pruned = stats['pruned_channels'][i]
+            sparsity = stats['sparsity'][i]
+            
+            print(f"{layer:<40} {total:<10} {active:<10} {pruned:<10} {sparsity:<10.2f}%")
+            
+            total_all += total
+            active_all += active
+        
+        print("-"*100)
+        overall_sparsity = ((total_all - active_all) / total_all) * 100
+        print(f"{'OVERALL':<40} {total_all:<10} {active_all:<10} "
+              f"{total_all - active_all:<10} {overall_sparsity:<10.2f}%")
+        print("="*100 + "\n")
+        
+        return stats
     
-    def remove_hooks(self):
-        """Remove all hooks"""
-        for hook in self.mask_hooks:
-            hook.remove()
-        self.mask_hooks = []
-
-
-def resnet20(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    """
-    ResNet-20 for Knowledge Distillation
+    def extract_pruned_architecture(self, threshold=0.0):
+        """
+        معماری هرس‌شده را استخراج می‌کند (برای ساخت مدل کوچک)
+        
+        Returns:
+            dict: شامل in_cfg و out_cfg
+        """
+        in_cfg = [3]  # کانال ورودی اولیه (RGB)
+        out_cfg = []
+        
+        for name, module in self.named_modules():
+            if isinstance(module, DynamicMask):
+                active_channels = module.get_active_channels(threshold)
+                out_cfg.append(active_channels)
+                
+                # کانال ورودی لایه بعدی = کانال خروجی لایه فعلی
+                if len(out_cfg) < 9:  # تا 9 لایه (3 لایه × 3 بلوک)
+                    in_cfg.append(active_channels)
+        
+        return {
+            'in_cfg': in_cfg,
+            'out_cfg': out_cfg,
+            'threshold': threshold
+        }
     
-    Args:
-        num_classes: number of output classes
-        option: 'A' or 'B' for shortcut connection
-        finding_masks: whether to use dynamic masking
-        in_cfg: input channel configuration
-        out_cfg: output channel configuration
-    """
-    return ResNet_KD(BasicBlock_KD, [3, 3, 3], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+    def apply_pruning(self, threshold=0.0):
+        """
+        ماسک‌ها را به صورت باینری (0 یا 1) تبدیل می‌کند
+        این تابع را بعد از آموزش صدا بزنید
+        """
+        print(f"\nApplying binary pruning with threshold = {threshold}...")
+        
+        for module in self.modules():
+            if isinstance(module, DynamicMask):
+                with torch.no_grad():
+                    binary_mask = module.get_binary_mask(threshold)
+                    module.mask.data = binary_mask.view_as(module.mask)
+        
+        print("✓ Pruning applied successfully!")
+        self.print_pruning_stats(threshold=threshold)
 
 
-def resnet32(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [5, 5, 5], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet20_auto(num_classes=10, option='B', use_pruning=False):
+
+    return ResNet_AutoPrune(BasicBlock_AutoPrune, [3, 3, 3], 
+                           num_classes=num_classes, 
+                           option=option, 
+                           use_pruning=use_pruning)
 
 
-def resnet44(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [7, 7, 7], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
+def resnet56_auto(num_classes=10, option='B', use_pruning=False):
+   
+    return ResNet_AutoPrune(BasicBlock_AutoPrune, [9, 9, 9], 
+                           num_classes=num_classes, 
+                           option=option, 
+                           use_pruning=use_pruning)
 
 
-def resnet56(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [9, 9, 9], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
-
-
-def resnet110(num_classes=10, option='B', finding_masks=False, in_cfg=None, out_cfg=None):
-    return ResNet_KD(BasicBlock_KD, [18, 18, 18], in_cfg=in_cfg, out_cfg=out_cfg,
-                     num_classes=num_classes, option=option, finding_masks=finding_masks)
-
-
+# ============================================================================
+# Test Script
+# ============================================================================
 if __name__ == "__main__":
-    # Test without masking
-    model1 = resnet20(num_classes=10, option='B', finding_masks=False)
-    print("ResNet-20 without masking:")
-    print(f"  Parameters: {sum(p.numel() for p in model1.parameters()) / 1e6:.2f}M")
+    print("Testing Automatic Pruning ResNet...\n")
     
-    # Test with masking
-    in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
-    out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-    model2 = resnet20(num_classes=10, option='B', finding_masks=True, 
-                      in_cfg=in_cfg, out_cfg=out_cfg)
-    print("\nResNet-20 with masking:")
-    print(f"  Parameters: {sum(p.numel() for p in model2.parameters()) / 1e6:.2f}M")
+    # 1. ساخت مدل با pruning
+    model = resnet20_auto(num_classes=10, option='B', use_pruning=True)
+    model.eval()
     
-    # Test forward pass
-    input_tensor = torch.rand((2, 3, 32, 32))
-    output1 = model1(input_tensor)
-    output2 = model2(input_tensor)
-    print(f"\nOutput shape (no mask): {output1.shape}")
-    print(f"Output shape (with mask): {output2.shape}")
+    print(f"Total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # Test mask extraction
-    model2.hook_masks()
-    _ = model2(input_tensor)
-    masks = model2.get_masks()
-    print(f"\nNumber of masks captured: {len(masks)}")
-    model2.remove_hooks()
+    # 2. تست forward pass
+    x = torch.randn(2, 3, 32, 32)
+    output = model(x)
+    print(f"Output shape: {output.shape}\n")
+    
+    # 3. شبیه‌سازی آموزش (ماسک‌ها را تصادفی تغییر می‌دهیم)
+    print("Simulating training (randomizing masks)...")
+    for module in model.modules():
+        if isinstance(module, DynamicMask):
+            # مقادیر تصادفی بین -1 و 1
+            module.mask.data = torch.randn_like(module.mask) * 0.5
+    
+    # 4. نمایش آمار با threshold‌های مختلف
+    print("\n" + "="*100)
+    print("Testing different thresholds:")
+    print("="*100)
+    
+    for threshold in [0.0, 0.1, 0.2, 0.3]:
+        stats = model.print_pruning_stats(threshold=threshold)
+    
+    # 5. استخراج معماری هرس‌شده
+    print("\nExtracting pruned architecture...")
+    arch_config = model.extract_pruned_architecture(threshold=0.2)
+    print(f"\nPruned Architecture (threshold=0.2):")
+    print(f"  in_cfg:  {arch_config['in_cfg']}")
+    print(f"  out_cfg: {arch_config['out_cfg']}")
+    
+    # 6. اعمال هرس نهایی
+    model.apply_pruning(threshold=0.2)
+    
+    # 7. تست forward pass بعد از pruning
+    output_pruned = model(x)
+    print(f"\nOutput shape after pruning: {output_pruned.shape}")
+    print("\n✓ All tests passed!")

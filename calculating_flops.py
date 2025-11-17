@@ -97,53 +97,61 @@ if args.arch == 'cvgg11_bn_small':
         ckpt = torch.load(checkpoint_path, map_location=f'cuda:{args.gpu}')
         model.load_state_dict(ckpt)
         print("✓ Checkpoint loaded successfully!")
+
 elif args.arch == 'resnet20_small':
     print("Loading ResNet20 Small model...")
-   
-    # Configuration from mask file (active neurons per layer)
-    in_cfg = [3, 16, 14, 13, 28, 21, 24, 47, 69, 50]
-    out_cfg = [16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
-   
-    print(f"Input channels config: {in_cfg}")
-    print(f"Output channels config: {out_cfg}")
-   
-    # Create model with dynamic masks
+    
+    mask_checkpoint_path = '/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_T_resnet56_S_resnet20_mask.pt'
+    print(f"Loading pruned configuration from: {mask_checkpoint_path}")
+    
+    # --- گام ۱: بارگذاری پیکربندی کانال‌های هرس‌شده ---
+    try:
+        # بارگذاری فایل ماسک که حاوی مقادیر نهایی active neurons (layer_num) است.
+        mask_data = torch.load(mask_checkpoint_path, map_location='cpu')
+        
+        # 'layer_num' همان out_cfg است
+        out_cfg = mask_data['layer_num']
+        
+        # in_cfg = [3] + خروجی لایه‌های قبلی
+        in_cfg = [3] + out_cfg[:-1] 
+        
+        print(f"Loaded Input channels config (in_cfg): {in_cfg}")
+        print(f"Loaded Output channels config (out_cfg): {out_cfg}")
+
+    except Exception as e:
+        print(f"FATAL ERROR: Could not load mask config. Check file path. Error: {e}")
+        # استفاده از پیکربندی هاردکد قبلی به عنوان راه حل موقت
+        in_cfg = [3, 16, 14, 13, 28, 21, 24, 47, 69, 50]
+        out_cfg = [16, 14, 13, 28, 21, 24, 47, 69, 50, 49]
+        print("Using HARDCODED configuration as fallback.")
+    
+    # --- گام ۲: ساخت مدل هرس‌شده ساختاری ---
+    # CRITICAL: finding_masks=False برای ساخت مدل کوچک‌تر الزامی است.
     model = resnet20(
-        finding_masks=False, # Enable mask parameters
+        finding_masks=False, 
         in_cfg=in_cfg,
         out_cfg=out_cfg,
         num_classes=args.num_classes
     ).cuda()
-   
-    # Load trained model weights (NOT just masks)
+    
+    # --- گام ۳: بارگذاری وزن‌های هرس‌شده ---
     model_checkpoint_path = '/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_resnet20.pt'
-    mask_checkpoint_path = '/kaggle/working/pretrained_model/resnet56/cifar10/cifar10_T_resnet56_S_resnet20_mask.pt'
-   
     print(f"\nLoading model weights from: {model_checkpoint_path}")
-   
+    
     try:
-        # Try to load the full model checkpoint first
         model_ckpt = torch.load(model_checkpoint_path, map_location=f'cuda:{args.gpu}')
-        model.load_state_dict(model_ckpt, strict=False)
-        print("✓ Model weights loaded successfully!")
-    except FileNotFoundError:
-        print(f"⚠ Model checkpoint not found at {model_checkpoint_path}")
-        print(f" Attempting to load mask only from {mask_checkpoint_path}")
-       
-        # If model checkpoint doesn't exist, load mask only (will give poor accuracy)
-        mask_ckpt = torch.load(mask_checkpoint_path, map_location=f'cuda:{args.gpu}')
-       
-        # Extract only mask parameters
-        mask_dict = {}
-        for k, v in mask_ckpt.items():
-            if "mask" in k:
-                mask_dict[k] = v
-       
-        model.load_state_dict(mask_dict, strict=False)
-        print("⚠ Only masks loaded - model not trained yet!")
-        print(" Run training first to get good accuracy!")
-   
+        
+        # استفاده از strict=True، زیرا حالا مدل باید structurally pruned باشد.
+        model.load_state_dict(model_ckpt, strict=True) 
+        
+        print("✓ Pruned Model weights loaded successfully! (Strict Match)")
+    except RuntimeError as e:
+        print(f"✗ Weight loading failed: {e}")
+        print("Model size mismatch detected! This means the 'resnet20' function in 'resnet_kd.py' is NOT building a structurally smaller model, or the checkpoint file is wrong.")
+        
     print(f"✓ Model created and loaded")
+
+
 else:
     raise ValueError(f"Unsupported architecture: {args.arch}")
 # ================================================================================
@@ -191,4 +199,5 @@ print(f'Parameters: {params:,.0f} ({params/1e6:.2f}M)')
 print(f'FLOPs: {flops:,.0f} ({flops/1e6:.2f}M)')
 print(f'Latency: {latency:.2f} ms')
 print("="*80)
+
 

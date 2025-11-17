@@ -55,6 +55,10 @@ class ResNet_KD(nn.Module):
         self.linear = nn.Linear(64, num_classes)
         self.apply(_weights_init)
 
+        # برای ذخیره هوک‌ها
+        self.mask_handles = []
+        self.captured_masks = {}
+
     def _make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []
@@ -72,8 +76,42 @@ class ResNet_KD(nn.Module):
         out = out.view(out.size(0), -1)
         return self.linear(out)
 
+    # ==================== اضافه شده برای گرفتن ماسک‌ها ====================
+    def hook_masks(self):
+        self.mask_handles = []
+        self.captured_masks = {}
+
+        def get_hook(name):
+            def hook(module, input, output):
+                if hasattr(module, 'mask'):
+                    self.captured_masks[name] = module.mask.detach().cpu()
+            return hook
+
+        for name, module in self.named_modules():
+            if hasattr(module, 'mask'):
+                handle = module.register_forward_hook(get_hook(name))
+                self.mask_handles.append(handle)
+
+    def get_masks(self):
+        return self.captured_masks
+
+    def remove_hooks(self):
+        for handle in self.mask_handles:
+            handle.remove()
+        self.mask_handles = []
+    # =====================================================================
+
 def resnet20(num_classes=10, finding_masks=False):
     return ResNet_KD(BasicBlock_KD, [3, 3, 3], num_classes, finding_masks)
 
+def resnet32(num_classes=10, finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [5, 5, 5], num_classes, finding_masks)
+
+def resnet44(num_classes=10, finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [7, 7, 7], num_classes, finding_masks)
+
 def resnet56(num_classes=10, finding_masks=False):
     return ResNet_KD(BasicBlock_KD, [9, 9, 9], num_classes, finding_masks)
+
+def resnet110(num_classes=10, finding_masks=False):
+    return ResNet_KD(BasicBlock_KD, [18, 18, 18], num_classes, finding_masks)

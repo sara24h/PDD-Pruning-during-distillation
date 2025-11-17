@@ -109,7 +109,7 @@ elif args.arch == 'resnet20_small':
    
     # Create model with dynamic masks
     model = resnet20(
-        finding_masks=True, # Enable mask parameters
+        finding_masks=False, # Enable mask parameters
         in_cfg=in_cfg,
         out_cfg=out_cfg,
         num_classes=args.num_classes
@@ -191,3 +191,4 @@ print(f'Parameters: {params:,.0f} ({params/1e6:.2f}M)')
 print(f'FLOPs: {flops:,.0f} ({flops/1e6:.2f}M)')
 print(f'Latency: {latency:.2f} ms')
 print("="*80)
+

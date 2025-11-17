@@ -167,8 +167,7 @@ def main_worker(args):
     elif args.arch_s == 'resnet20':
         in_cfg = [3, 16, 16, 16, 32, 32, 32, 64, 64, 64]
         out_cfg = [16, 16, 16, 32, 32, 32, 64, 64, 64, 64]
-        model_s = resnet20(finding_masks=True, in_cfg=in_cfg, out_cfg=out_cfg, 
-                          num_classes=args.num_classes, option='B')
+        model_s = resnet20(in_cfg=in_cfg, out_cfg=out_cfg, num_classes=10)
     else:
         raise ValueError(f"Unsupported student architecture: {args.arch_s}")
     
@@ -460,3 +459,4 @@ if __name__ == "__main__":
     #   --lr 0.01 --batch_size 128 --weight_decay 0.005 --epochs 50 \
     #   --lr_decay_step 20,40 --num_classes 10 --pretrained
     main()
+

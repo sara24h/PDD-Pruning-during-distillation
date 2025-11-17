@@ -109,7 +109,7 @@ elif args.arch == 'resnet20_small':
    
     # Create model with dynamic masks
     model = resnet20(
-        finding_masks=False, # Enable mask parameters
+        finding_masks=True, # Enable mask parameters
         in_cfg=in_cfg,
         out_cfg=out_cfg,
         num_classes=args.num_classes

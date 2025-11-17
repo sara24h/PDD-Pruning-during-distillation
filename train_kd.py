@@ -375,7 +375,7 @@ def main_worker(args):
         # ========================================================================================
         # Step 11: Save Best Model and Extract Masks
         # ========================================================================================
-        save = ((epoch % args.save_every) == 0) and args.save_every > 0
+        save = (args.save_every > 0) and ((epoch % args.save_every) == 0)
         if is_best or save or epoch == args.epochs - 1:
             if is_best:
                 mask_list = []
@@ -454,3 +454,4 @@ def main_worker(args):
 
 if __name__ == "__main__":
     main(args)  # <<<< اصلاح شد: args به تابع main پاس داده می‌شود
+

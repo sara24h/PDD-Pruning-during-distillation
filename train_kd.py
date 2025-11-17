@@ -10,7 +10,7 @@ from args import args
 import datetime
 from data.Data import CIFAR10, CIFAR100
 from model.VGG_cifar import cvgg16_bn, cvgg19_bn
-from resnet_kd import resnet20, resnet56, resnet110
+from resnet_kd import resnet20, resnet56
 from trainer.trainer import validate, train, train_KD
 from utils.utils import set_random_seed, set_gpu, Logger, get_logger, get_lr
 from vgg_kd import cvgg11_bn
@@ -592,5 +592,6 @@ if __name__ == "__main__":
     #   --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 \
     #   --lr_decay_step 20,40 --num_classes 10 --pretrained
     main()
+
 
 

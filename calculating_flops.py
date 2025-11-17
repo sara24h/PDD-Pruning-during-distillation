@@ -203,7 +203,7 @@ elif os.path.exists(pruned_model_path):
     model.load_state_dict(torch.load(pruned_model_path))
     print("✓ Pruned model loaded successfully!")
 else:
-    print("No pruned model found. Please run train_auto_prune.py first.")
+    print("No pruned model found. Please run train_kd.py first.")
     exit()
 
 # ================================================================================

@@ -347,7 +347,7 @@ def main_worker(args):
         print(f"✓ Using CIFAR-10 dataset ({args.num_classes} classes)")
     elif args.set == 'cifar100':
         data = CIFAR100()
-        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes}")
+        print(f"✓ Using CIFAR-100 dataset ({args.num_classes} classes)")
     else:
         raise ValueError(f"Unknown dataset: {args.set}")
 
@@ -592,4 +592,5 @@ if __name__ == "__main__":
     #   --lr 0.01 --batch_size 256 --weight_decay 0.005 --epochs 50 \
     #   --lr_decay_step 20,40 --num_classes 10 --pretrained
     main()
+
 

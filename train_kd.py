@@ -135,8 +135,6 @@ def main_worker(args):
     logger.info(f"  Epochs: {args.epochs} (Paper uses 50 for distillation)")
     logger.info(f"  LR decay steps: {args.lr_decay_step} (Paper: 20,40)")
     logger.info(f"  Num classes: {args.num_classes}")
-    logger.info(active_neurons)
-
 
     # ✅ Create Student Model with dynamic masks (PDD)
     print("\n" + "=" * 80)
@@ -275,7 +273,6 @@ def main_worker(args):
     args.start_epoch = args.start_epoch or 0
     mask_list = []
     layer_num = []
-    active_neurons = []
     
     # ✅ Start training (Paper: 50 epochs)
     print("\n" + "=" * 80)
@@ -325,14 +322,12 @@ def main_worker(args):
                 layer_num = []
                 model_s.hook_masks()
                 masks = model_s.get_masks()
-                active_neurons = [] 
                 
                 for key in masks.keys():
                     msk = ApproxSign(masks[key].mask).squeeze()
                     total = torch.sum(msk)
                     layer_num.append(int(total.cpu().detach().numpy()))
                     mask_list.append(msk)
-                    active_neurons.append(int(total.cpu().detach().numpy()))
 
                 model_s.remove_hooks()
                 
@@ -345,9 +340,8 @@ def main_worker(args):
                 print(f"{'*'*80}\n")
 
                 to = {'layer_num': layer_num, 'mask': mask_list}
-                torch.save(to, 'pretrained_model/' + args.arch + '/' + args.set + "/{}_T_{}_S_{}_mask.pt".format(args.set, args.arch, args.arch_s))
-                torch.save(model_s.state_dict(), 'pretrained_model/' + args.arch + '/' + args.set + "/{}_{}.pt".format(args.set, args.arch_s))
-
+                mask_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_T_{args.arch}_S_{args.arch_s}_mask.pt'
+                model_path = f'pretrained_model/{args.arch}/{args.set}/{args.set}_{args.arch_s}.pt'
                 
                 torch.save(to, mask_path)
                 torch.save(model_s.state_dict(), model_path)
@@ -365,9 +359,9 @@ def main_worker(args):
 def ApproxSign(mask):
  
     out_forward = torch.sign(mask)
-    mask1 = mask < -0.5
+    mask1 = mask < -1
     mask2 = mask < 0
-    mask3 = mask < 0.5
+    mask3 = mask < 1
     out1 = (-1) * mask1.type(torch.float32) + (mask * mask + 2 * mask) * (1 - mask1.type(torch.float32))
     out2 = out1 * mask2.type(torch.float32) + (-mask * mask + 2 * mask) * (1 - mask2.type(torch.float32))
     out3 = out2 * mask3.type(torch.float32) + 1 * (1 - mask3.type(torch.float32))
@@ -379,4 +373,3 @@ def ApproxSign(mask):
 if __name__ == "__main__":
  
     main()
-

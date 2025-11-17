@@ -95,7 +95,6 @@ if args.evaluate:
     print('Acc is {}'.format(acc1))
 
 
-# calculate model size
 input_image_size = args.input_image_size
 print('image size is {}'.format(input_image_size))
 input_image = torch.randn(1, 3, input_image_size, input_image_size).cuda()
